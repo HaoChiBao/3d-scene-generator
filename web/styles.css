@@ -1,0 +1,199 @@
+:root {
+  --bg0: #0c1118;
+  --bg1: #141c27;
+  --ink: #e8eef7;
+  --muted: #9aabbf;
+  --accent: #3dd6c6;
+  --accent-2: #f0a35e;
+  --line: rgba(232, 238, 247, 0.12);
+  --panel: rgba(20, 28, 39, 0.92);
+  --danger: #ff7b7b;
+  --ok: #7dffb3;
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-body: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background:
+    radial-gradient(1200px 700px at 10% -10%, rgba(61, 214, 198, 0.16), transparent 55%),
+    radial-gradient(900px 600px at 90% 0%, rgba(240, 163, 94, 0.12), transparent 50%),
+    linear-gradient(160deg, var(--bg0), #081018 55%, var(--bg1));
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) 1fr;
+  min-height: 100vh;
+}
+
+.panel {
+  padding: 2rem 1.5rem;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+}
+
+.brand {
+  margin: 0 0 1.25rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+
+h1 {
+  margin: 0 0 0.75rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(1.6rem, 2.4vw, 2.1rem);
+  line-height: 1.15;
+}
+
+.lede {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+.lede em {
+  color: var(--ink);
+  font-style: normal;
+}
+
+form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.file {
+  display: grid;
+  place-items: center;
+  min-height: 96px;
+  border: 1px dashed rgba(61, 214, 198, 0.45);
+  border-radius: 14px;
+  background: rgba(61, 214, 198, 0.05);
+  cursor: pointer;
+  padding: 1rem;
+  text-align: center;
+}
+
+.file input {
+  display: none;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+input[type="number"] {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--ink);
+  padding: 0.55rem 0.7rem;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.85rem 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #04201d;
+  background: linear-gradient(135deg, var(--accent), #7af0e2);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.status {
+  margin-top: 1rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.status.error {
+  border-color: rgba(255, 123, 123, 0.45);
+  color: var(--danger);
+}
+
+.status.ok {
+  border-color: rgba(125, 255, 179, 0.35);
+  color: var(--ok);
+}
+
+.meta {
+  margin-top: 0.75rem;
+  max-height: 220px;
+  overflow: auto;
+  padding: 0.75rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+}
+
+.viewport {
+  position: relative;
+  min-height: 100vh;
+}
+
+#canvas-host,
+#canvas-host canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.hint {
+  position: absolute;
+  inset: auto 0 1.5rem 0;
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .viewport {
+    min-height: 65vh;
+  }
+}

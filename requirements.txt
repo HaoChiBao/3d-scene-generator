@@ -1,0 +1,12 @@
+modal>=1.0
+numpy<2
+Pillow
+opencv-python-headless
+torch
+torchvision
+huggingface_hub
+einops
+safetensors
+trimesh
+fastapi
+python-multipart
