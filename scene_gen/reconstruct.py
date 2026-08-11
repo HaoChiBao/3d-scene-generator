@@ -16,7 +16,8 @@ from scene_gen.frames import prepare_image_folder
 
 
 DEFAULT_VGGT_REPO = Path("/opt/vggt")
-DEFAULT_MODEL_URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+DEFAULT_MODEL_REPO = "facebook/VGGT-1B"
+DEFAULT_MODEL_FILE = "model.pt"
 
 
 def ensure_vggt_on_path(vggt_repo: Path = DEFAULT_VGGT_REPO) -> None:
@@ -29,13 +30,20 @@ def load_vggt_model(
     device: torch.device,
     *,
     vggt_repo: Path = DEFAULT_VGGT_REPO,
-    model_url: str = DEFAULT_MODEL_URL,
+    model_repo: str = DEFAULT_MODEL_REPO,
+    model_file: str = DEFAULT_MODEL_FILE,
 ):
+    """Load VGGT weights via Hugging Face Hub (respects HF_HOME / Modal volumes)."""
     ensure_vggt_on_path(vggt_repo)
+    from huggingface_hub import hf_hub_download
     from vggt.models.vggt import VGGT
 
+    print(f"Downloading/loading {model_repo}/{model_file} via huggingface_hub...")
+    weights_path = hf_hub_download(repo_id=model_repo, filename=model_file)
+    print(f"Weights path: {weights_path}")
+
     model = VGGT()
-    state = torch.hub.load_state_dict_from_url(model_url, map_location="cpu")
+    state = torch.load(weights_path, map_location="cpu")
     model.load_state_dict(state)
     model.eval()
     model = model.to(device)

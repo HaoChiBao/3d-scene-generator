@@ -111,15 +111,26 @@ async function loadPly(url) {
   hintEl.textContent = "Drag to orbit · scroll to zoom · right-drag to pan";
 }
 
+function formatElapsed(ms) {
+  const sec = Math.floor(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 async function pollJob(jobId) {
+  const started = Date.now();
   for (;;) {
     const res = await fetch(`/api/jobs/${jobId}`);
     if (!res.ok) throw new Error(`Status check failed (${res.status})`);
     const data = await res.json();
-    setStatus(`${data.status}: ${data.message || ""}`);
+    const elapsed = formatElapsed(Date.now() - started);
+    const label = (data.message || data.status || "Working").trim();
+    setStatus(`${label} · ${elapsed}`);
     if (data.status === "succeeded") {
       metaWrap.hidden = false;
       metaEl.textContent = JSON.stringify(data.meta ?? data, null, 2);
+      setStatus(`Loading scene into viewer… · ${elapsed}`);
       await loadPly(`/api/jobs/${jobId}/scene.ply`);
       setStatus(`Ready — ${data.meta?.num_points ?? "?"} points`, "ok");
       return;
@@ -127,7 +138,7 @@ async function pollJob(jobId) {
     if (data.status === "failed") {
       throw new Error(data.message || "Reconstruction failed");
     }
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 1500));
   }
 }
 
@@ -138,6 +149,8 @@ form.addEventListener("submit", async (event) => {
 
   submitBtn.disabled = true;
   metaWrap.hidden = true;
+  emptyEl.classList.remove("hidden");
+  hintEl.textContent = "Working — keep this tab open";
   setStatus("Uploading…");
 
   try {
@@ -153,11 +166,14 @@ form.addEventListener("submit", async (event) => {
       throw new Error(err || `Upload failed (${res.status})`);
     }
     const { id } = await res.json();
-    setStatus(`queued: job ${id}`);
+    setStatus(
+      "Queued — waiting for GPU. First start can take a few minutes while the model loads."
+    );
     await pollJob(id);
   } catch (err) {
     console.error(err);
     setStatus(err.message || String(err), "error");
+    hintEl.textContent = "Upload media to start reconstruction";
   } finally {
     submitBtn.disabled = false;
   }

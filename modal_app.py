@@ -76,7 +76,8 @@ def _job_dir(job_id: str) -> Path:
     image=image,
     gpu="A100",
     timeout=30 * 60,
-    scaledown_window=120,
+    # Keep the GPU warm longer so uploads don't look "stuck" on cold start.
+    scaledown_window=10 * 60,
     volumes={
         str(ARTIFACT_ROOT): artifact_vol,
         str(HF_CACHE): hf_vol,
@@ -84,14 +85,29 @@ def _job_dir(job_id: str) -> Path:
 )
 class SceneReconstructor:
     @modal.enter()
-    def load_model(self):
+    def setup(self):
         import torch
-        from scene_gen.reconstruct import load_vggt_model
 
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA required for VGGT MVP inference")
         self.device = torch.device("cuda")
+        # Lazy-load inside reconstruct so job status can update during weight load.
+        self.model = None
+
+    def _ensure_model(self, job_id: str, prev: dict) -> None:
+        if self.model is not None:
+            return
+
+        from scene_gen.reconstruct import load_vggt_model
+
+        jobs[job_id] = {
+            **prev,
+            "status": "running",
+            "message": "Loading VGGT model weights (first run can take a few minutes)…",
+        }
+        hf_vol.reload()
         self.model = load_vggt_model(self.device, vggt_repo=VGGT_REPO)
+        hf_vol.commit()
         print("VGGT-1B loaded")
 
     @modal.method()
@@ -111,7 +127,7 @@ class SceneReconstructor:
         jobs[job_id] = {
             **prev,
             "status": "running",
-            "message": "Running VGGT reconstruction",
+            "message": "Starting GPU worker…",
         }
 
         out = _job_dir(job_id)
@@ -120,6 +136,12 @@ class SceneReconstructor:
         media_path.write_bytes(media_bytes)
 
         try:
+            self._ensure_model(job_id, prev)
+            jobs[job_id] = {
+                **prev,
+                "status": "running",
+                "message": "Running VGGT reconstruction…",
+            }
             meta = reconstruct_media(
                 media_path,
                 out,
@@ -202,7 +224,10 @@ def api():
             {
                 "id": job_id,
                 "status": "queued",
-                "message": "Queued for GPU reconstruction",
+                "message": (
+                    "Queued — waiting for GPU. First start can take a few minutes "
+                    "while the model loads."
+                ),
                 "filename": filename,
             },
         )
@@ -215,7 +240,11 @@ def api():
             max_frames=max_frames,
             conf_thres=conf_thres,
         )
-        return {"id": job_id, "status": "queued"}
+        return {
+            "id": job_id,
+            "status": "queued",
+            "message": "Queued — waiting for GPU",
+        }
 
     @web.get("/api/jobs/{job_id}")
     async def get_job(job_id: str):
