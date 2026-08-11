@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
+import * as GaussianSplats3D from "@mkkellogg/gaussian-splats-3d";
 
 const form = document.getElementById("upload-form");
 const fileInput = document.getElementById("file");
@@ -20,7 +21,7 @@ host.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf3f3f3);
-const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 500);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 5000);
 camera.position.set(0.4, 0.3, 1.2);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -33,12 +34,17 @@ key.position.set(2, 4, 3);
 scene.add(key);
 
 let pointsObj = null;
+let viewer = null;
+let useExternalViewer = false;
 
 function resize() {
   const { clientWidth: w, clientHeight: h } = host;
   renderer.setSize(w, h, false);
   camera.aspect = w / Math.max(h, 1);
   camera.updateProjectionMatrix();
+  if (viewer) {
+    viewer.setSize?.(w, h);
+  }
 }
 
 window.addEventListener("resize", resize);
@@ -46,8 +52,10 @@ resize();
 
 function animate() {
   requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
+  if (!useExternalViewer) {
+    controls.update();
+    renderer.render(scene, camera);
+  }
 }
 animate();
 
@@ -62,12 +70,24 @@ function setStatus(text, kind = "") {
   statusEl.textContent = text;
 }
 
-function clearScenePoints() {
-  if (!pointsObj) return;
-  scene.remove(pointsObj);
-  pointsObj.geometry.dispose();
-  pointsObj.material.dispose();
-  pointsObj = null;
+function clearScene() {
+  if (pointsObj) {
+    scene.remove(pointsObj);
+    pointsObj.geometry.dispose();
+    pointsObj.material.dispose();
+    pointsObj = null;
+  }
+  if (viewer) {
+    try {
+      viewer.dispose();
+    } catch (_) {
+      /* ignore */
+    }
+    viewer = null;
+  }
+  useExternalViewer = false;
+  // Ensure our canvas is visible again for point fallback
+  renderer.domElement.style.display = "block";
 }
 
 function fitCameraToObject(object) {
@@ -84,19 +104,15 @@ function fitCameraToObject(object) {
   controls.update();
 }
 
-async function loadPly(url) {
-  clearScenePoints();
+async function loadPointsPly(url) {
+  clearScene();
   const loader = new PLYLoader();
   const geometry = await loader.loadAsync(url);
   geometry.computeBoundingBox();
   if (!geometry.getAttribute("color")) {
     const count = geometry.getAttribute("position").count;
     const colors = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      colors[i * 3] = 0.45;
-      colors[i * 3 + 1] = 0.45;
-      colors[i * 3 + 2] = 0.45;
-    }
+    colors.fill(0.45);
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   }
   const material = new THREE.PointsMaterial({
@@ -109,6 +125,43 @@ async function loadPly(url) {
   fitCameraToObject(pointsObj);
   emptyEl.classList.add("hidden");
   hintEl.textContent = "Drag to orbit · scroll to zoom · right-drag to pan";
+}
+
+async function loadGaussianPly(url) {
+  clearScene();
+  renderer.domElement.style.display = "none";
+  useExternalViewer = true;
+
+  viewer = new GaussianSplats3D.Viewer({
+    rootElement: host,
+    cameraUp: [0, -1, -0.6],
+    initialCameraPosition: [-2, -1.5, 2.5],
+    initialCameraLookAt: [0, 0, 0],
+    sharedMemoryForWorkers: false,
+    gpuAcceleratedSort: true,
+  });
+
+  await viewer.addSplatScene(url, {
+    showLoadingUI: false,
+    progressiveLoad: true,
+  });
+
+  emptyEl.classList.add("hidden");
+  hintEl.textContent = "Drag to orbit · scroll to zoom";
+  resize();
+}
+
+async function loadScene(jobId, preferred = "splat") {
+  if (preferred === "splat") {
+    try {
+      await loadGaussianPly(`/api/jobs/${jobId}/gaussians.ply`);
+      return "splat";
+    } catch (err) {
+      console.warn("Gaussian splat load failed, falling back to points", err);
+    }
+  }
+  await loadPointsPly(`/api/jobs/${jobId}/points.ply`);
+  return "points";
 }
 
 function formatElapsed(ms) {
@@ -125,14 +178,18 @@ async function pollJob(jobId) {
     if (!res.ok) throw new Error(`Status check failed (${res.status})`);
     const data = await res.json();
     const elapsed = formatElapsed(Date.now() - started);
-    const label = (data.message || data.status || "Working").trim();
-    setStatus(`${label} · ${elapsed}`);
+    setStatus(`${(data.message || data.status || "Working").trim()} · ${elapsed}`);
     if (data.status === "succeeded") {
       metaWrap.hidden = false;
       metaEl.textContent = JSON.stringify(data.meta ?? data, null, 2);
       setStatus(`Loading scene into viewer… · ${elapsed}`);
-      await loadPly(`/api/jobs/${jobId}/scene.ply`);
-      setStatus(`Ready — ${data.meta?.num_points ?? "?"} points`, "ok");
+      const mode = await loadScene(jobId, data.viewer || "splat");
+      setStatus(
+        mode === "splat"
+          ? `Ready — Gaussian splat (WorldMirror 2.0)`
+          : `Ready — point cloud fallback`,
+        "ok"
+      );
       return;
     }
     if (data.status === "failed") {
@@ -158,7 +215,7 @@ form.addEventListener("submit", async (event) => {
     body.append("file", file);
     body.append("max_frames", document.getElementById("max-frames").value);
     body.append("target_fps", document.getElementById("target-fps").value);
-    body.append("conf_thres", "50");
+    body.append("target_size", "952");
 
     const res = await fetch("/api/jobs", { method: "POST", body });
     if (!res.ok) {
@@ -167,13 +224,13 @@ form.addEventListener("submit", async (event) => {
     }
     const { id } = await res.json();
     setStatus(
-      "Queued — waiting for GPU. First start can take a few minutes while the model loads."
+      "Queued — waiting for GPU. First WorldMirror start can take several minutes."
     );
     await pollJob(id);
   } catch (err) {
     console.error(err);
     setStatus(err.message || String(err), "error");
-    hintEl.textContent = "Upload media to start reconstruction";
+    hintEl.textContent = "Upload a video to start high-quality reconstruction";
   } finally {
     submitBtn.disabled = false;
   }

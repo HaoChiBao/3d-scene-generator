@@ -6,62 +6,61 @@ Whole-space reconstruction (4dv.ai-style navigable space), **not** single-object
 
 | | |
 |---|---|
-| **Input** | Short video (primary) or one/more photos of a place |
-| **Output** | Navigable 3D reconstruction of the **entire space** |
-| **v1 representation** | Colored point cloud (PLY) from VGGT |
-| **v1 interaction** | Free camera in a web viewer |
-| **Later** | Gaussian splat export, then optional 4D (time) |
+| **Input** | Short video (best) or multiple photos of a place |
+| **Output** | Navigable **3D Gaussian Splat** of the entire space |
+| **Interaction** | Free camera in a web splat viewer |
 
-## Chosen model (MVP)
+## Model choice (high quality)
 
-**[VGGT](https://github.com/facebookresearch/vggt)** (`facebook/VGGT-1B`)
+### Current: **WorldMirror 2.0** (`tencent/HY-World-2.0`)
 
-- Feed-forward multi-view geometry: cameras, depth, world points
-- Works from **1 image**, sparse views, or **video frames**
-- Fast enough for an interactive MVP on A100-class GPUs
-- Exports into formats that can feed InstantSplat / gsplat later
+Part of [HY-World 2.0](https://github.com/Tencent-Hunyuan/HY-World-2.0).
 
-### Why not TRELLIS / Hunyuan3D?
+- Feed-forward **multi-view / video → 3DGS**
+- Outputs Gaussians + cameras + depth + point cloud
+- Open SOTA for whole-space reconstruction (not object meshing)
+- Best with a slow orbit / walkthrough video (many views)
 
-Those target **object assets** (one mesh). This product needs **full-space** geometry.
+### Why not VGGT (previous MVP)?
 
-### Roadmap after MVP
+VGGT is a strong geometry backbone, but the MVP exported a **sparse colored point cloud**. That looks thin and “bad” for product demos. WorldMirror predicts **Gaussian splat attributes** meant for photoreal novel views.
 
-1. **VGGT → InstantSplat / gsplat** — denser novel-view quality  
-2. **WorldMirror / HY-World** — stronger single-image worlds  
-3. **FreeTimeGS / EasyVolcap** — true 4D volumetric video (4dv parity)
+### Alternatives considered
+
+| Model | Role | Notes |
+|-------|------|--------|
+| **WorldMirror 2.0** | ✅ Primary | Best open reconstruct-from-video/photos → 3DGS |
+| AnySplat | Contender | Feed-forward unconstrained GS; good alternative |
+| InstantSplat | Contender | Sparse-view GS with short optimization |
+| Full HY-World gen (Pano+Stereo) | Later | Single-image *generative* worlds; much heavier (80B+17B) |
+| FreeTimeGS / EasyVolcap | Later | True 4D volumetric video (4dv parity) |
+| TRELLIS / Hunyuan3D | ❌ | Object assets, wrong product |
 
 ## Architecture
 
 ```
-Browser (upload + Three.js viewer)
+Browser (upload + Gaussian splat viewer)
         │
         ▼
 Modal FastAPI  ── jobs Dict + artifacts Volume
         │
         ▼
-Modal GPU class (VGGT-1B on A100)
+Modal GPU class (WorldMirror 2.0 on A100/H100)
         │
-        ├─ extract frames (video @ ~1 fps, capped)
-        ├─ load_and_preprocess_images
-        ├─ VGGT forward → depth / cameras / world points
-        └─ filter by confidence → scene.ply (+ meta.json)
+        ├─ accept video or image folder
+        ├─ WorldMirrorPipeline → gaussians.ply (+ points.ply)
+        └─ store under /artifacts/{job_id}/
 ```
 
-## Job flow
+## Quality tips
 
-1. `POST /api/jobs` — multipart `file` (image or video)  
-2. Worker extracts frames → runs VGGT → writes `/artifacts/{job_id}/scene.ply`  
-3. `GET /api/jobs/{id}` — `queued | running | succeeded | failed`  
-4. Frontend loads PLY and enables free orbit / dolly  
+- Prefer **5–20s video** slowly panning the space  
+- Avoid motion blur / jump cuts  
+- Single images work, but coverage and novel-view quality drop hard  
+- Raise `target_size` (default 952) for sharper reconstruction at higher VRAM/time cost  
 
-## Hosting
+## Later upgrades
 
-- **Modal**: model weights (HF cache volume), GPU inference, API, static UI  
-- **GitHub**: this repo (app + pipeline docs)
-
-## Explicit non-goals for v1
-
-- Single-object GLB generators (TRELLIS, Hunyuan3D, InstantMesh)  
-- Multi-camera studio capture / live 4D streaming  
-- Photogrammetry-grade metric accuracy  
+1. Optional **quality mode**: WorldMirror → short 3DGS refine  
+2. **Single-image generative** path via HY-Pano + WorldStereo (full HY-World)  
+3. **4D** path for temporal volumetric video  

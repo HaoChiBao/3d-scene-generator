@@ -1,79 +1,56 @@
 # 3D Scene Generator
 
-Upload a **video or photos of a place** → reconstruct the **entire space** → explore it with a free camera in the browser.
+Upload a **video or photos of a place** → reconstruct the **entire space** as a **3D Gaussian splat** → explore it in the browser.
 
-This is a whole-space MVP (4dv.ai-style navigation), **not** a single-object mesh generator.
+This is a whole-space product (4dv.ai-style navigation), **not** a single-object mesh generator.
 
-See [PIPELINE.md](./PIPELINE.md) for the full architecture and model roadmap.
+See [PIPELINE.md](./PIPELINE.md) for architecture and model rationale.
 
-## Model
+## Model (high quality)
 
-**VGGT-1B** ([facebookresearch/vggt](https://github.com/facebookresearch/vggt)) hosted on **Modal** (A100).
+**WorldMirror 2.0** from [HY-World 2.0](https://github.com/Tencent-Hunyuan/HY-World-2.0) (`tencent/HY-World-2.0`)
 
-- Video → sampled frames → multi-view geometry  
-- Output: colored `scene.ply` + `meta.json`  
-- UI: Three.js point-cloud viewer  
+- Multi-view / video → cameras, depth, **3DGS**
+- Hosted on Modal (A100-80GB)
+- Best results from a slow walkthrough / orbit video
 
-## Live MVP
+Previous VGGT point-cloud MVP was replaced because quality was too low for demos.
+
+## Live
 
 - App: https://jamesyang663--3d-scene-generator-api.modal.run  
 - Dashboard: https://modal.com/apps/jamesyang663/main/deployed/3d-scene-generator  
-- Model: `facebook/VGGT-1B` on Modal A100  
-
-Verified end-to-end: kitchen image → ~90k-point navigable PLY.
 
 ## Quick start (Modal)
 
 ```bash
-# 1) Auth (once)
 pip install modal
 modal setup
-
-# 2) From this repo
 modal deploy modal_app.py
-# or for iterative dev:
-modal serve modal_app.py
 ```
 
-Open the printed Modal URL. Upload a short walkthrough video of a room (slow pan works best).
-
-### API
+## API
 
 | Method | Path | Notes |
 |--------|------|--------|
-| `GET` | `/api/health` | Liveness |
-| `POST` | `/api/jobs` | multipart: `file`, optional `max_frames`, `target_fps`, `conf_thres` |
+| `GET` | `/api/health` | Liveness + model name |
+| `POST` | `/api/jobs` | multipart: `file`, optional `max_frames`, `target_fps`, `target_size` |
 | `GET` | `/api/jobs/{id}` | Job status |
-| `GET` | `/api/jobs/{id}/scene.ply` | Point cloud |
-| `GET` | `/api/jobs/{id}/meta.json` | Timings / counts |
+| `GET` | `/api/jobs/{id}/gaussians.ply` | Primary 3DGS asset |
+| `GET` | `/api/jobs/{id}/points.ply` | Fallback point cloud |
+| `GET` | `/api/jobs/{id}/meta.json` | Timings / flags |
 
-## Local CLI (optional)
+## Tips
 
-Needs a local CUDA GPU and a VGGT checkout at `/opt/vggt` (or pass `--vggt-repo`):
-
-```bash
-python scripts/run_local.py path/to/video.mp4 --out outputs/demo
-```
+- Prefer a **slow 5–20s video** of the space  
+- First GPU cold start downloads large weights — wait a few minutes  
+- Single images work but novel views will be weaker  
 
 ## Repo layout
 
 ```
-PIPELINE.md          # saved product/model pipeline
-modal_app.py         # Modal GPU worker + FastAPI + static UI
-scene_gen/           # frame extract, VGGT run, PLY export
-web/                 # upload UI + Three.js viewer
-scripts/run_local.py # offline helper
+PIPELINE.md          # model + architecture decisions
+modal_app.py         # Modal GPU worker + FastAPI + UI
+scene_gen/           # WorldMirror integration
+web/                 # upload UI + Gaussian splat viewer
 ```
-
-## Tips for good results
-
-- Prefer a **slow video** that orbits / walks the space (5–20s)  
-- Avoid heavy motion blur and jump cuts  
-- Start with `max_frames=12–16` for faster jobs  
-- Single images work, but coverage of the space will be limited  
-
-## Next
-
-1. VGGT poses → InstantSplat / gsplat for denser novel views  
-2. Streamable splat format in the viewer  
-3. Optional 4D path (FreeTimeGS lineage) once static spaces are solid  

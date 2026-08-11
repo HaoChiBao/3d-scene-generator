@@ -1,12 +1,7 @@
 modal>=1.0
-numpy<2
+numpy==1.26.4
 Pillow
 opencv-python-headless
-torch
-torchvision
 huggingface_hub
-einops
-safetensors
-trimesh
 fastapi
 python-multipart

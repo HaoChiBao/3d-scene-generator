@@ -1,12 +1,9 @@
 """
-Modal deployment for whole-space 3D scene generation (VGGT-1B).
+Modal deployment — high-quality whole-space reconstruction via WorldMirror 2.0.
 
 Deploy:
-  modal setup          # once
+  modal setup
   modal deploy modal_app.py
-
-Serve locally against Modal:
-  modal serve modal_app.py
 """
 
 import json
@@ -18,10 +15,15 @@ import modal
 APP_NAME = "3d-scene-generator"
 ARTIFACT_ROOT = Path("/artifacts")
 HF_CACHE = Path("/root/.cache/huggingface")
-VGGT_REPO = Path("/opt/vggt")
+HYWORLD_REPO = Path("/opt/HY-World-2.0")
 
+# Match CUDA toolkit to the torch wheel (cu128) so gsplat can compile.
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.from_registry(
+        "nvidia/cuda:12.8.1-devel-ubuntu22.04",
+        add_python="3.11",
+    )
+    .entrypoint([])
     .apt_install(
         "git",
         "ffmpeg",
@@ -30,32 +32,79 @@ image = (
         "libsm6",
         "libxext6",
         "libxrender1",
+        "build-essential",
+        "ninja-build",
+        "wget",
+        "ca-certificates",
     )
     .pip_install(
-        "torch==2.3.1",
-        "torchvision==0.18.1",
-        index_url="https://download.pytorch.org/whl/cu121",
-    )
-    .pip_install(
-        "numpy<2",
-        "Pillow",
-        "huggingface_hub",
-        "einops",
-        "safetensors",
-        "opencv-python-headless",
-        "trimesh",
-        "fastapi",
-        "python-multipart",
-        "hf_transfer",
-        "uvicorn",
+        "torch==2.7.1",
+        "torchvision==0.22.1",
+        index_url="https://download.pytorch.org/whl/cu128",
     )
     .run_commands(
-        f"git clone --depth 1 https://github.com/facebookresearch/vggt.git {VGGT_REPO}"
+        f"git clone --depth 1 https://github.com/Tencent-Hunyuan/HY-World-2.0.git {HYWORLD_REPO}"
+    )
+    .pip_install(
+        "diffusers==0.36.0",
+        "transformers==5.2.0",
+        "accelerate",
+        "peft==0.18.1",
+        "safetensors",
+        "omegaconf",
+        "einops",
+        "kornia",
+        "easydict",
+        "scipy==1.14.1",
+        "timm==1.0.11",
+        "Pillow",
+        "imageio[ffmpeg]",
+        "decord",
+        "imagesize",
+        "opencv-python==4.10.0.84",
+        "matplotlib==3.10.3",
+        "scikit-image==0.25.2",
+        "ftfy",
+        "regex",
+        "trimesh",
+        "plyfile",
+        "loguru==0.7.3",
+        "tqdm",
+        "tyro==1.0.8",
+        "numpy==1.26.4",
+        "huggingface_hub",
+        "hf_transfer",
+        "fastapi",
+        "python-multipart",
+        "uvicorn",
+        "packaging",
+        "ninja",
+        "onnxruntime-gpu",
+    )
+    .run_commands(
+        "pip install gsplat --no-build-isolation",
+        gpu="A100",
+    )
+    .pip_install("wheel")
+    .run_commands(
+        "pip install flash-attn==2.7.4.post1 --no-build-isolation || true",
+        gpu="A100",
+    )
+    .add_local_file(
+        "scripts/patch_worldmirror_flash_attn.py",
+        remote_path="/tmp/patch_worldmirror_flash_attn.py",
+        copy=True,
+    )
+    .run_commands(
+        f"python /tmp/patch_worldmirror_flash_attn.py {HYWORLD_REPO}"
     )
     .env(
         {
             "HF_HUB_ENABLE_HF_TRANSFER": "1",
             "HF_HOME": str(HF_CACHE),
+            "PYTHONPATH": str(HYWORLD_REPO),
+            "TORCH_CUDA_ARCH_LIST": "8.0;9.0",
+            "CUDA_HOME": "/usr/local/cuda",
         }
     )
     .add_local_python_source("scene_gen")
@@ -75,9 +124,9 @@ def _job_dir(job_id: str) -> Path:
 @app.cls(
     image=image,
     gpu="A100",
-    timeout=30 * 60,
-    # Keep the GPU warm longer so uploads don't look "stuck" on cold start.
+    timeout=45 * 60,
     scaledown_window=10 * 60,
+    memory=65536,
     volumes={
         str(ARTIFACT_ROOT): artifact_vol,
         str(HF_CACHE): hf_vol,
@@ -89,26 +138,25 @@ class SceneReconstructor:
         import torch
 
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA required for VGGT MVP inference")
+            raise RuntimeError("CUDA required for WorldMirror inference")
         self.device = torch.device("cuda")
-        # Lazy-load inside reconstruct so job status can update during weight load.
-        self.model = None
+        self.pipeline = None
 
-    def _ensure_model(self, job_id: str, prev: dict) -> None:
-        if self.model is not None:
+    def _ensure_pipeline(self, job_id: str, prev: dict) -> None:
+        if self.pipeline is not None:
             return
 
-        from scene_gen.reconstruct import load_vggt_model
+        from scene_gen.worldmirror import load_worldmirror_pipeline
 
         jobs[job_id] = {
             **prev,
             "status": "running",
-            "message": "Loading VGGT model weights (first run can take a few minutes)…",
+            "message": "Loading WorldMirror 2.0 weights (first run can take several minutes)…",
         }
         hf_vol.reload()
-        self.model = load_vggt_model(self.device, vggt_repo=VGGT_REPO)
+        self.pipeline = load_worldmirror_pipeline(enable_bf16=True)
         hf_vol.commit()
-        print("VGGT-1B loaded")
+        print("WorldMirror 2.0 loaded")
 
     @modal.method()
     def reconstruct(
@@ -118,10 +166,10 @@ class SceneReconstructor:
         media_bytes: bytes,
         *,
         target_fps: float = 1.0,
-        max_frames: int = 24,
-        conf_thres: float = 50.0,
+        max_frames: int = 32,
+        target_size: int = 952,
     ) -> dict:
-        from scene_gen.reconstruct import reconstruct_media
+        from scene_gen.worldmirror import reconstruct_with_worldmirror
 
         prev = dict(jobs[job_id]) if job_id in jobs else {"id": job_id}
         jobs[job_id] = {
@@ -136,35 +184,35 @@ class SceneReconstructor:
         media_path.write_bytes(media_bytes)
 
         try:
-            self._ensure_model(job_id, prev)
+            self._ensure_pipeline(job_id, prev)
             jobs[job_id] = {
                 **prev,
                 "status": "running",
-                "message": "Running VGGT reconstruction…",
+                "message": "Running WorldMirror 2.0 reconstruction…",
             }
-            meta = reconstruct_media(
+            meta = reconstruct_with_worldmirror(
                 media_path,
                 out,
-                self.model,
-                device=self.device,
-                target_fps=target_fps,
-                max_frames=max_frames,
-                conf_thres=conf_thres,
+                self.pipeline,
+                target_size=int(target_size),
+                fps=max(int(round(float(target_fps))), 1),
+                video_max_frames=int(max_frames),
             )
             artifact_vol.commit()
+            kind = "gaussians" if meta.get("has_gaussians") else "points"
             result = {
                 **prev,
                 "status": "succeeded",
-                "message": (
-                    f"Reconstructed {meta['num_frames']} frames → "
-                    f"{meta['num_points']} points"
-                ),
+                "message": f"Reconstructed {kind} scene with WorldMirror 2.0",
                 "meta": meta,
-                "ply_url": f"/api/jobs/{job_id}/scene.ply",
+                "ply_url": f"/api/jobs/{job_id}/gaussians.ply"
+                if meta.get("has_gaussians")
+                else f"/api/jobs/{job_id}/points.ply",
+                "viewer": "splat" if meta.get("has_gaussians") else "points",
             }
             jobs[job_id] = result
             return result
-        except Exception as exc:  # noqa: BLE001 - surface to job status
+        except Exception as exc:  # noqa: BLE001
             jobs[job_id] = {
                 **prev,
                 "status": "failed",
@@ -186,7 +234,7 @@ def api():
     from fastapi.responses import FileResponse, HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
-    web = FastAPI(title="3D Scene Generator", version="0.1.0")
+    web = FastAPI(title="3D Scene Generator", version="0.2.0")
     web.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -196,7 +244,11 @@ def api():
 
     @web.get("/api/health")
     def health():
-        return {"ok": True, "model": "facebook/VGGT-1B", "app": APP_NAME}
+        return {
+            "ok": True,
+            "model": "tencent/HY-World-2.0 (WorldMirror 2.0)",
+            "app": APP_NAME,
+        }
 
     @web.post("/api/jobs")
     async def create_job(request: Request):
@@ -209,14 +261,12 @@ def api():
         data = await upload.read()
         if not data:
             raise HTTPException(400, "Empty upload")
-
-        # Soft limit ~150MB
-        if len(data) > 150 * 1024 * 1024:
-            raise HTTPException(400, "File too large (max 150MB)")
+        if len(data) > 200 * 1024 * 1024:
+            raise HTTPException(400, "File too large (max 200MB)")
 
         target_fps = float(form.get("target_fps") or 1.0)
-        max_frames = int(form.get("max_frames") or 24)
-        conf_thres = float(form.get("conf_thres") or 50.0)
+        max_frames = int(form.get("max_frames") or 32)
+        target_size = int(form.get("target_size") or 952)
 
         job_id = uuid.uuid4().hex[:12]
         await jobs.put.aio(
@@ -225,10 +275,11 @@ def api():
                 "id": job_id,
                 "status": "queued",
                 "message": (
-                    "Queued — waiting for GPU. First start can take a few minutes "
-                    "while the model loads."
+                    "Queued — waiting for GPU. First WorldMirror start can take "
+                    "several minutes while weights load."
                 ),
                 "filename": filename,
+                "model": "worldmirror-2.0",
             },
         )
 
@@ -238,7 +289,7 @@ def api():
             data,
             target_fps=target_fps,
             max_frames=max_frames,
-            conf_thres=conf_thres,
+            target_size=target_size,
         )
         return {
             "id": job_id,
@@ -253,17 +304,38 @@ def api():
             raise HTTPException(404, "Job not found")
         return data
 
-    @web.get("/api/jobs/{job_id}/scene.ply")
-    def get_ply(job_id: str):
+    def _artifact(job_id: str, name: str) -> FileResponse:
         artifact_vol.reload()
-        path = _job_dir(job_id) / "scene.ply"
+        path = _job_dir(job_id) / name
         if not path.exists():
-            raise HTTPException(404, "PLY not ready")
+            raise HTTPException(404, f"{name} not ready")
         return FileResponse(
             path,
             media_type="application/octet-stream",
-            filename=f"{job_id}_scene.ply",
+            filename=f"{job_id}_{name}",
         )
+
+    @web.get("/api/jobs/{job_id}/gaussians.ply")
+    def get_gaussians(job_id: str):
+        return _artifact(job_id, "gaussians.ply")
+
+    @web.get("/api/jobs/{job_id}/points.ply")
+    def get_points(job_id: str):
+        return _artifact(job_id, "points.ply")
+
+    @web.get("/api/jobs/{job_id}/scene.ply")
+    def get_scene(job_id: str):
+        artifact_vol.reload()
+        job = _job_dir(job_id)
+        for name in ("gaussians.ply", "scene.ply", "points.ply"):
+            path = job / name
+            if path.exists():
+                return FileResponse(
+                    path,
+                    media_type="application/octet-stream",
+                    filename=f"{job_id}_{name}",
+                )
+        raise HTTPException(404, "Scene not ready")
 
     @web.get("/api/jobs/{job_id}/meta.json")
     def get_meta(job_id: str):

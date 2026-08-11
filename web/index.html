@@ -15,7 +15,8 @@
       {
         "imports": {
           "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+          "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
         }
       }
     </script>
@@ -25,27 +26,26 @@
       <aside class="panel">
         <header class="panel-top">
           <p class="brand">Scene Space</p>
-          <p class="model-tag">VGGT</p>
+          <p class="model-tag">WorldMirror 2.0</p>
         </header>
 
         <h1>Capture a space.<br /><span>Explore it in 3D.</span></h1>
         <p class="lede">
-          Upload a short video or a few photos. We reconstruct the full scene so
-          you can move freely through it. First run may take a few minutes while
-          the GPU model loads.
+          Upload a short walkthrough video for best quality. We reconstruct the
+          full scene as a Gaussian splat with WorldMirror&nbsp;2.0.
         </p>
 
         <form id="upload-form">
           <label class="file">
             <input id="file" type="file" accept="image/*,video/*" required />
             <span class="file-title" id="file-label">Drop video or images</span>
-            <span class="file-sub">MP4, MOV, PNG, JPG</span>
+            <span class="file-sub">Video recommended · MP4, MOV, PNG, JPG</span>
           </label>
 
           <div class="row">
             <label>
               Max frames
-              <input id="max-frames" type="number" min="1" max="48" value="16" />
+              <input id="max-frames" type="number" min="1" max="48" value="24" />
             </label>
             <label>
               Sample fps
@@ -74,7 +74,7 @@
         <div id="canvas-host"></div>
         <div id="empty" class="empty">
           <p class="empty-title">No scene yet</p>
-          <p id="hint" class="hint">Upload media to start reconstruction</p>
+          <p id="hint" class="hint">Upload a video to start high-quality reconstruction</p>
         </div>
       </main>
     </div>
