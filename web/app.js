@@ -7,16 +7,19 @@ const fileInput = document.getElementById("file");
 const fileLabel = document.getElementById("file-label");
 const statusEl = document.getElementById("status");
 const metaEl = document.getElementById("meta");
+const metaWrap = document.getElementById("meta-wrap");
+const emptyEl = document.getElementById("empty");
 const hintEl = document.getElementById("hint");
 const submitBtn = document.getElementById("submit");
 const host = document.getElementById("canvas-host");
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setClearColor(0x000000, 0);
+renderer.setClearColor(0xf3f3f3, 1);
 host.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf3f3f3);
 const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 500);
 camera.position.set(0.4, 0.3, 1.2);
 
@@ -24,8 +27,8 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.85));
-const key = new THREE.DirectionalLight(0xfff2e0, 0.65);
+scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+const key = new THREE.DirectionalLight(0xffffff, 0.55);
 key.position.set(2, 4, 3);
 scene.add(key);
 
@@ -50,7 +53,7 @@ animate();
 
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
-  fileLabel.textContent = f ? f.name : "Choose video or images";
+  fileLabel.textContent = f ? f.name : "Drop video or images";
 });
 
 function setStatus(text, kind = "") {
@@ -90,9 +93,9 @@ async function loadPly(url) {
     const count = geometry.getAttribute("position").count;
     const colors = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
-      colors[i * 3] = 0.55;
-      colors[i * 3 + 1] = 0.75;
-      colors[i * 3 + 2] = 0.8;
+      colors[i * 3] = 0.45;
+      colors[i * 3 + 1] = 0.45;
+      colors[i * 3 + 2] = 0.45;
     }
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   }
@@ -104,6 +107,7 @@ async function loadPly(url) {
   pointsObj = new THREE.Points(geometry, material);
   scene.add(pointsObj);
   fitCameraToObject(pointsObj);
+  emptyEl.classList.add("hidden");
   hintEl.textContent = "Drag to orbit · scroll to zoom · right-drag to pan";
 }
 
@@ -114,7 +118,7 @@ async function pollJob(jobId) {
     const data = await res.json();
     setStatus(`${data.status}: ${data.message || ""}`);
     if (data.status === "succeeded") {
-      metaEl.hidden = false;
+      metaWrap.hidden = false;
       metaEl.textContent = JSON.stringify(data.meta ?? data, null, 2);
       await loadPly(`/api/jobs/${jobId}/scene.ply`);
       setStatus(`Ready — ${data.meta?.num_points ?? "?"} points`, "ok");
@@ -133,7 +137,7 @@ form.addEventListener("submit", async (event) => {
   if (!file) return;
 
   submitBtn.disabled = true;
-  metaEl.hidden = true;
+  metaWrap.hidden = true;
   setStatus("Uploading…");
 
   try {
