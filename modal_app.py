@@ -9,8 +9,6 @@ Serve locally against Modal:
   modal serve modal_app.py
 """
 
-from __future__ import annotations
-
 import json
 import uuid
 from pathlib import Path
@@ -161,7 +159,7 @@ class SceneReconstructor:
 )
 @modal.asgi_app()
 def api():
-    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse
     from fastapi.staticfiles import StaticFiles
@@ -179,16 +177,14 @@ def api():
         return {"ok": True, "model": "facebook/VGGT-1B", "app": APP_NAME}
 
     @web.post("/api/jobs")
-    async def create_job(
-        file: UploadFile = File(...),
-        target_fps: float = Form(1.0),
-        max_frames: int = Form(24),
-        conf_thres: float = Form(50.0),
-    ):
-        if not file.filename:
-            raise HTTPException(400, "Missing filename")
+    async def create_job(request: Request):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            raise HTTPException(400, "Missing file")
 
-        data = await file.read()
+        filename = getattr(upload, "filename", None) or "upload.bin"
+        data = await upload.read()
         if not data:
             raise HTTPException(400, "Empty upload")
 
@@ -196,29 +192,37 @@ def api():
         if len(data) > 150 * 1024 * 1024:
             raise HTTPException(400, "File too large (max 150MB)")
 
-        job_id = uuid.uuid4().hex[:12]
-        jobs[job_id] = {
-            "id": job_id,
-            "status": "queued",
-            "message": "Queued for GPU reconstruction",
-            "filename": file.filename,
-        }
+        target_fps = float(form.get("target_fps") or 1.0)
+        max_frames = int(form.get("max_frames") or 24)
+        conf_thres = float(form.get("conf_thres") or 50.0)
 
-        SceneReconstructor().reconstruct.spawn(
+        job_id = uuid.uuid4().hex[:12]
+        await jobs.put.aio(
             job_id,
-            file.filename,
+            {
+                "id": job_id,
+                "status": "queued",
+                "message": "Queued for GPU reconstruction",
+                "filename": filename,
+            },
+        )
+
+        await SceneReconstructor().reconstruct.spawn.aio(
+            job_id,
+            filename,
             data,
-            target_fps=float(target_fps),
-            max_frames=int(max_frames),
-            conf_thres=float(conf_thres),
+            target_fps=target_fps,
+            max_frames=max_frames,
+            conf_thres=conf_thres,
         )
         return {"id": job_id, "status": "queued"}
 
     @web.get("/api/jobs/{job_id}")
-    def get_job(job_id: str):
-        if job_id not in jobs:
-            raise HTTPException(404, "Job not found")
-        return jobs[job_id]
+    async def get_job(job_id: str):
+        try:
+            return await jobs.get.aio(job_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Job not found") from exc
 
     @web.get("/api/jobs/{job_id}/scene.ply")
     def get_ply(job_id: str):
