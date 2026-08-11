@@ -14,6 +14,14 @@ See [PIPELINE.md](./PIPELINE.md) for the full architecture and model roadmap.
 - Output: colored `scene.ply` + `meta.json`  
 - UI: Three.js point-cloud viewer  
 
+## Live MVP
+
+- App: https://jamesyang663--3d-scene-generator-api.modal.run  
+- Dashboard: https://modal.com/apps/jamesyang663/main/deployed/3d-scene-generator  
+- Model: `facebook/VGGT-1B` on Modal A100  
+
+Verified end-to-end: kitchen image → ~90k-point navigable PLY.
+
 ## Quick start (Modal)
 
 ```bash

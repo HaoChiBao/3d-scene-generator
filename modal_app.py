@@ -219,10 +219,10 @@ def api():
 
     @web.get("/api/jobs/{job_id}")
     async def get_job(job_id: str):
-        try:
-            return await jobs.get.aio(job_id)
-        except KeyError as exc:
-            raise HTTPException(404, "Job not found") from exc
+        data = await jobs.get.aio(job_id)
+        if data is None:
+            raise HTTPException(404, "Job not found")
+        return data
 
     @web.get("/api/jobs/{job_id}/scene.ply")
     def get_ply(job_id: str):
