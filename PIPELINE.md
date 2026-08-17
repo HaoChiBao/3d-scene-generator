@@ -2,6 +2,8 @@
 
 Whole-space reconstruction (4dv.ai-style navigable space), **not** single-object meshes.
 
+Full model comparison, papers, and install notes: **[MODELS.md](./MODELS.md)**.
+
 ## Product goal
 
 | | |
@@ -10,30 +12,31 @@ Whole-space reconstruction (4dv.ai-style navigable space), **not** single-object
 | **Output** | Navigable **3D Gaussian Splat** of the entire space |
 | **Interaction** | Free camera in a web splat viewer |
 
-## Model choice (high quality)
+## Model choice
 
-### Current: **WorldMirror 2.0** (`tencent/HY-World-2.0`)
+### Current: **recon3d** (VGGT → gsplat)
 
-Part of [HY-World 2.0](https://github.com/Tencent-Hunyuan/HY-World-2.0).
+Open pipeline: [jashshah999/recon3d](https://github.com/jashshah999/recon3d) (MIT).
 
-- Feed-forward **multi-view / video → 3DGS**
-- Outputs Gaussians + cameras + depth + point cloud
-- Open SOTA for whole-space reconstruction (not object meshing)
-- Best with a slow orbit / walkthrough video (many views)
+1. Sample frames from video  
+2. **VGGT-1B** estimates cameras + dense points (CVPR 2025 Best Paper)  
+3. Optional **MoGe-2** metric scale  
+4. Per-scene **gsplat** training → standard `gaussians.ply`  
 
-### Why not VGGT (previous MVP)?
+This is the quality path used by real products: **optimize Gaussians on your scene**, don’t only run a feed-forward net.
 
-VGGT is a strong geometry backbone, but the MVP exported a **sparse colored point cloud**. That looks thin and “bad” for product demos. WorldMirror predicts **Gaussian splat attributes** meant for photoreal novel views.
+### Why not WorldMirror 2.0?
 
-### Alternatives considered
+Tried in production. Feed-forward 3DGS is fast but novel views looked wrong for casual room video. See MODELS.md.
+
+### Alternatives
 
 | Model | Role | Notes |
 |-------|------|--------|
-| **WorldMirror 2.0** | ✅ Primary | Best open reconstruct-from-video/photos → 3DGS |
-| AnySplat | Contender | Feed-forward unconstrained GS; good alternative |
-| InstantSplat | Contender | Sparse-view GS with short optimization |
-| Full HY-World gen (Pano+Stereo) | Later | Single-image *generative* worlds; much heavier (80B+17B) |
-| FreeTimeGS / EasyVolcap | Later | True 4D volumetric video (4dv parity) |
+| **recon3d** | ✅ Primary | Best open “video → good splat” stack |
+| AnySplat | Fast feed-forward | Good research alt; weaker novel views |
+| LongSplat | Long casual video | Heavier; future quality mode |
+| Full HY-World gen | Generative single image | Later / heavy |
 | TRELLIS / Hunyuan3D | ❌ | Object assets, wrong product |
 
 ## Architecture
@@ -45,22 +48,22 @@ Browser (upload + Gaussian splat viewer)
 Modal FastAPI  ── jobs Dict + artifacts Volume
         │
         ▼
-Modal GPU class (WorldMirror 2.0 on A100/H100)
+Modal GPU (A100) — recon3d
         │
-        ├─ accept video or image folder
-        ├─ WorldMirrorPipeline → gaussians.ply (+ points.ply)
+        ├─ frames → VGGT poses
+        ├─ gsplat train → gaussians.ply
         └─ store under /artifacts/{job_id}/
 ```
 
 ## Quality tips
 
-- Prefer **5–20s video** slowly panning the space  
-- Avoid motion blur / jump cuts  
-- Single images work, but coverage and novel-view quality drop hard  
-- Raise `target_size` (default 952) for sharper reconstruction at higher VRAM/time cost  
+- Prefer **5–30s video** walking / orbiting the space (parallax matters)  
+- Default ~**48 frames** @ **2 fps**, **7000** train steps  
+- Avoid motion blur and jump cuts  
+- Need **≥3 frames**; single stills are not enough for this pipeline  
 
 ## Later upgrades
 
-1. Optional **quality mode**: WorldMirror → short 3DGS refine  
-2. **Single-image generative** path via HY-Pano + WorldStereo (full HY-World)  
-3. **4D** path for temporal volumetric video  
+1. Enable GTSAM factor-graph for 80–300 frame walks  
+2. Optional LongSplat / post-opt quality mode  
+3. True **4D** path for temporal volumetric video  

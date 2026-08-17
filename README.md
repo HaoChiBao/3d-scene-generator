@@ -2,19 +2,16 @@
 
 Upload a **video or photos of a place** → reconstruct the **entire space** as a **3D Gaussian splat** → explore it in the browser.
 
-This is a whole-space product (4dv.ai-style navigation), **not** a single-object mesh generator.
+Whole-space product (4dv.ai-style navigation), **not** a single-object mesh generator.
 
-See [PIPELINE.md](./PIPELINE.md) for architecture and model rationale.
+- Architecture: [PIPELINE.md](./PIPELINE.md)  
+- Model research (papers, download, why this stack): [MODELS.md](./MODELS.md)
 
-## Model (high quality)
+## Model
 
-**WorldMirror 2.0** from [HY-World 2.0](https://github.com/Tencent-Hunyuan/HY-World-2.0) (`tencent/HY-World-2.0`)
+**recon3d** — [VGGT](https://github.com/facebookresearch/vggt) camera poses + per-scene [gsplat](https://github.com/nerfstudio-project/gsplat) training ([recon3d](https://github.com/jashshah999/recon3d), MIT).
 
-- Multi-view / video → cameras, depth, **3DGS**
-- Hosted on Modal (A100-80GB)
-- Best results from a slow walkthrough / orbit video
-
-Previous VGGT point-cloud MVP was replaced because quality was too low for demos.
+Feed-forward-only WorldMirror was replaced because novel-view quality was not good enough for demos. Per-scene Gaussian optimization is what makes navigable scenes look right.
 
 ## Live
 
@@ -34,23 +31,23 @@ modal deploy modal_app.py
 | Method | Path | Notes |
 |--------|------|--------|
 | `GET` | `/api/health` | Liveness + model name |
-| `POST` | `/api/jobs` | multipart: `file`, optional `max_frames`, `target_fps`, `target_size` |
+| `POST` | `/api/jobs` | multipart: `file`, optional `max_frames`, `target_fps`, `train_steps`, `resize` |
 | `GET` | `/api/jobs/{id}` | Job status |
 | `GET` | `/api/jobs/{id}/gaussians.ply` | Primary 3DGS asset |
-| `GET` | `/api/jobs/{id}/points.ply` | Fallback point cloud |
 | `GET` | `/api/jobs/{id}/meta.json` | Timings / flags |
 
 ## Tips
 
-- Prefer a **slow 5–20s video** of the space  
-- First GPU cold start downloads large weights — wait a few minutes  
-- Single images work but novel views will be weaker  
+- Prefer a **slow walkthrough** with camera motion (parallax)  
+- Expect **several minutes** per scene (pose + ~7k gsplat steps)  
+- First GPU cold start downloads VGGT weights  
 
 ## Repo layout
 
 ```
-PIPELINE.md          # model + architecture decisions
+MODELS.md            # research dive + papers + install
+PIPELINE.md          # architecture decisions
 modal_app.py         # Modal GPU worker + FastAPI + UI
-scene_gen/           # WorldMirror integration
+scene_gen/           # recon3d integration
 web/                 # upload UI + Gaussian splat viewer
 ```

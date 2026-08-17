@@ -186,7 +186,7 @@ async function pollJob(jobId) {
       const mode = await loadScene(jobId, data.viewer || "splat");
       setStatus(
         mode === "splat"
-          ? `Ready — Gaussian splat (WorldMirror 2.0)`
+          ? `Ready — Gaussian splat (recon3d / VGGT + gsplat)`
           : `Ready — point cloud fallback`,
         "ok"
       );
@@ -215,7 +215,8 @@ form.addEventListener("submit", async (event) => {
     body.append("file", file);
     body.append("max_frames", document.getElementById("max-frames").value);
     body.append("target_fps", document.getElementById("target-fps").value);
-    body.append("target_size", "952");
+    body.append("train_steps", document.getElementById("train-steps").value);
+    body.append("resize", document.getElementById("resize").value);
 
     const res = await fetch("/api/jobs", { method: "POST", body });
     if (!res.ok) {
@@ -224,13 +225,14 @@ form.addEventListener("submit", async (event) => {
     }
     const { id } = await res.json();
     setStatus(
-      "Queued — waiting for GPU. First WorldMirror start can take several minutes."
+      "Queued — waiting for GPU. First run downloads VGGT; full job takes several minutes."
     );
     await pollJob(id);
   } catch (err) {
     console.error(err);
     setStatus(err.message || String(err), "error");
-    hintEl.textContent = "Upload a video to start high-quality reconstruction";
+    hintEl.textContent =
+      "Upload a walkthrough video — reconstruction usually takes a few minutes";
   } finally {
     submitBtn.disabled = false;
   }
