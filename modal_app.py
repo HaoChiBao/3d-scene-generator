@@ -109,6 +109,8 @@ app = modal.App(APP_NAME)
 artifact_vol = modal.Volume.from_name("3d-scene-artifacts", create_if_missing=True)
 hf_vol = modal.Volume.from_name("3d-scene-hf-cache", create_if_missing=True)
 jobs = modal.Dict.from_name("3d-scene-jobs", create_if_missing=True)
+# Loaded at deploy from local .env — never sent to the browser.
+llm_secret = modal.Secret.from_dotenv(__file__)
 
 
 def _job_dir(job_id: str) -> Path:
@@ -219,6 +221,7 @@ class SceneReconstructor:
     image=web_image,
     timeout=45 * 60,
     memory=4096,
+    secrets=[llm_secret],
     volumes={str(ARTIFACT_ROOT): artifact_vol},
 )
 def run_orbit(
@@ -265,6 +268,8 @@ def run_orbit(
             model=params.get("model"),
             extra_prompt=str(params.get("extra_prompt") or ""),
             api_key=params.get("api_key"),
+            context_mode=str(params.get("context_mode") or "nearest"),
+            order_mode=str(params.get("order_mode") or "bidirectional"),
             on_progress=set_status,
         )
         artifact_vol.commit()
@@ -292,6 +297,7 @@ def run_orbit(
 @app.function(
     image=web_image,
     timeout=60 * 60,
+    secrets=[llm_secret],
     volumes={str(ARTIFACT_ROOT): artifact_vol},
 )
 @modal.asgi_app()
@@ -311,10 +317,19 @@ def api():
 
     @web.get("/api/health")
     def health():
+        import os
+
+        providers = {
+            "gemini": bool(
+                os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            ),
+            "openai": bool(os.environ.get("OPENAI_API_KEY")),
+        }
         return {
             "ok": True,
             "app": APP_NAME,
             "docs": "METHODS.md",
+            "providers": providers,
             "methods": [
                 {
                     "id": "reconstruct",
@@ -407,6 +422,12 @@ def api():
         model = str(form.get("model") or "").strip() or None
         extra_prompt = str(form.get("extra_prompt") or "")
         api_key = str(form.get("api_key") or "").strip() or None
+        context_mode = str(form.get("context_mode") or "nearest").strip().lower()
+        order_mode = str(form.get("order_mode") or "bidirectional").strip().lower()
+        if context_mode not in ("nearest", "previous", "original"):
+            raise HTTPException(400, "context_mode must be nearest, previous, or original")
+        if order_mode not in ("bidirectional", "sequential"):
+            raise HTTPException(400, "order_mode must be bidirectional or sequential")
 
         increment_deg = max(5, min(increment_deg, 90))
         start_deg = max(0, min(start_deg, 350))
@@ -444,6 +465,8 @@ def api():
                 "model": model,
                 "extra_prompt": extra_prompt,
                 "api_key": api_key,
+                "context_mode": context_mode,
+                "order_mode": order_mode,
             },
         )
         return {"id": job_id, "status": "queued", "kind": "orbit"}
@@ -459,18 +482,20 @@ def api():
     def get_orbit_frame(job_id: str, index: int):
         artifact_vol.reload()
         job = _job_dir(job_id)
+        frames = []
         meta_path = job / "meta.json"
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            frames = meta.get("frames") or []
-            if 0 <= index < len(frames):
-                path = job / frames[index]["file"]
-                if path.exists():
-                    return FileResponse(path, media_type="image/jpeg")
-        # Progressive: frames written before meta.json is final.
-        matches = sorted((job / "frames").glob(f"{index:03d}_*.jpg"))
-        if matches:
-            return FileResponse(matches[0], media_type="image/jpeg")
+            frames = json.loads(meta_path.read_text(encoding="utf-8")).get("frames") or []
+        else:
+            live = jobs.get(job_id) or {}
+            frames = (live.get("meta") or {}).get("frames") or []
+        if 0 <= index < len(frames):
+            path = job / frames[index]["file"]
+            if path.exists():
+                return FileResponse(path, media_type="image/jpeg")
+        matches = sorted((job / "frames").glob("*deg.jpg"))
+        if 0 <= index < len(matches):
+            return FileResponse(matches[index], media_type="image/jpeg")
         raise HTTPException(404, "Frame not ready")
 
     @web.get("/api/jobs/{job_id}")

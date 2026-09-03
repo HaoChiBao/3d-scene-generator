@@ -55,6 +55,8 @@ Modal FastAPI (CPU image)
         │
         ├─ POST /api/jobs        → A100 SceneReconstructor (recon3d)
         └─ POST /api/orbit/jobs  → CPU run_orbit (Gemini / OpenAI)
+           context: original + nearest (default) | + previous | original only
+           order: bidirectional (default) | sequential
 ```
 
 ## Quality tips

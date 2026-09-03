@@ -65,6 +65,55 @@ def camera_xyz(
     return (x, y, z)
 
 
+CONTEXT_MODES = ("nearest", "previous", "original")
+ORDER_MODES = ("bidirectional", "sequential")
+
+
+def angular_distance(a: float, b: float) -> float:
+    return min((a - b) % 360.0, (b - a) % 360.0)
+
+
+def generation_order(angles: list[float], order_mode: str = "bidirectional") -> list[float]:
+    """Bidirectional walks ±increment from the first angle so the back view is fewer hops."""
+    if order_mode not in ORDER_MODES:
+        raise ValueError(f"Unknown order_mode: {order_mode}")
+    if order_mode == "sequential" or not angles:
+        return list(angles)
+    origin = angles[0]
+
+    def sort_key(angle: float) -> tuple[float, int]:
+        dist = angular_distance(angle, origin)
+        signed = ((angle - origin + 180.0) % 360.0) - 180.0
+        return (dist, 0 if signed >= 0 else 1)
+
+    return sorted(angles, key=sort_key)
+
+
+def select_context(
+    target_angle: float,
+    generated: list[dict[str, Any]],
+    *,
+    mode: str,
+    max_neighbors: int = 2,
+) -> list[dict[str, Any]]:
+    """Always keep the original. Optionally add previous or spatially nearest generated views."""
+    if mode not in CONTEXT_MODES:
+        raise ValueError(f"Unknown context_mode: {mode}")
+    if not generated:
+        return []
+    original = generated[0]
+    refs = [original]
+    others = [f for f in generated[1:] if f.get("image") is not None]
+    if mode == "original" or not others:
+        return refs
+    if mode == "previous":
+        refs.append(others[-1])
+        return refs
+    nearest = sorted(others, key=lambda f: angular_distance(target_angle, float(f["angle"])))
+    refs.extend(nearest[: max(0, int(max_neighbors))])
+    return refs
+
+
 def describe_azimuth(azimuth_deg: float) -> str:
     az = azimuth_deg % 360
     if az < 1 or az > 359:
@@ -84,17 +133,21 @@ def build_prompt(
     azimuth_deg: float,
     elevation_deg: float,
     extra: str = "",
+    context_angles: list[float] | None = None,
 ) -> str:
     where = describe_azimuth(azimuth_deg)
     extra = (extra or "").strip()
     tail = f"\nAdditional direction: {extra}" if extra else ""
+    refs = context_angles or [0.0]
+    ref_line = ", ".join(f"{a:.0f}°" for a in refs)
     return (
-        "This is a reference photograph of a real scene, taken at azimuth 0° "
-        f"with the camera {elevation_deg:.0f}° above the horizon.\n"
-        "Generate a photorealistic image of the SAME scene from a new camera pose.\n"
-        f"New pose: orbit {azimuth_deg:.0f}° clockwise around the subject — {where}. "
-        f"Keep elevation at {elevation_deg:.0f}° and the same distance.\n"
-        "Preserve identity, objects, materials, lighting, and spatial layout. "
+        "You are given one or more reference photographs of the SAME real scene.\n"
+        f"The first image is the identity lock (original capture). "
+        f"Any later images are already-generated nearby views at [{ref_line}].\n"
+        f"Synthesize the scene from a new camera pose: orbit {azimuth_deg:.0f}° "
+        f"clockwise — {where}. Elevation {elevation_deg:.0f}°, same distance.\n"
+        "Match both identity (from the original) and local continuity (from nearby views). "
+        "Do not invent a different room, lighting, or objects. "
         "Only the viewpoint should change. No text, borders, frames, or watermarks. "
         "Match the original aspect ratio and photographic style."
         f"{tail}"
@@ -119,31 +172,34 @@ def resolve_api_key(provider: str, override: str | None = None) -> str:
 
 
 def generate_view(
-    image: Image.Image,
+    images: Image.Image | list[Image.Image],
     *,
     provider: str,
     model: str,
     prompt: str,
     api_key: str,
 ) -> bytes:
+    refs = images if isinstance(images, list) else [images]
+    refs = [im.convert("RGB") for im in refs]
+    if not refs:
+        raise ValueError("Need at least one reference image")
     if provider == "gemini":
-        return _generate_gemini(image, model=model, prompt=prompt, api_key=api_key)
+        return _generate_gemini(refs, model=model, prompt=prompt, api_key=api_key)
     if provider == "openai":
-        return _generate_openai(image, model=model, prompt=prompt, api_key=api_key)
+        return _generate_openai(refs, model=model, prompt=prompt, api_key=api_key)
     raise ValueError(f"Unknown provider: {provider}")
 
 
 def _generate_gemini(
-    image: Image.Image, *, model: str, prompt: str, api_key: str
+    images: list[Image.Image], *, model: str, prompt: str, api_key: str
 ) -> bytes:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
-    rgb = image.convert("RGB")
     response = client.models.generate_content(
         model=model,
-        contents=[prompt, rgb],
+        contents=[prompt, *images],
         config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
     )
     for cand in response.candidates or []:
@@ -156,20 +212,23 @@ def _generate_gemini(
 
 
 def _generate_openai(
-    image: Image.Image, *, model: str, prompt: str, api_key: str
+    images: list[Image.Image], *, model: str, prompt: str, api_key: str
 ) -> bytes:
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
-    buf = BytesIO()
-    image.convert("RGB").save(buf, format="PNG")
-    buf.seek(0)
-    buf.name = "source.png"
+    buffers = []
+    for i, image in enumerate(images):
+        buf = BytesIO()
+        image.save(buf, format="PNG")
+        buf.seek(0)
+        buf.name = f"ref_{i}.png"
+        buffers.append(buf)
     result = client.images.edit(
         model=model,
-        image=buf,
+        image=buffers if len(buffers) > 1 else buffers[0],
         prompt=prompt,
-        size=_openai_size(image),
+        size=_openai_size(images[0]),
     )
     item = result.data[0]
     if getattr(item, "b64_json", None):
@@ -203,13 +262,22 @@ def reconstruct_orbit(
     model: str | None = None,
     extra_prompt: str = "",
     api_key: str | None = None,
+    context_mode: str = "nearest",
+    order_mode: str = "bidirectional",
     on_progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     provider = provider.strip().lower()
     if provider not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider}")
+    context_mode = (context_mode or "nearest").strip().lower()
+    order_mode = (order_mode or "bidirectional").strip().lower()
+    if context_mode not in CONTEXT_MODES:
+        raise ValueError(f"Unknown context_mode: {context_mode}")
+    if order_mode not in ORDER_MODES:
+        raise ValueError(f"Unknown order_mode: {order_mode}")
     model = (model or PROVIDERS[provider]["default_model"]).strip()
     angles = iter_angles(start_deg, end_deg, increment_deg)
+    work_order = generation_order(angles, order_mode)
     key = resolve_api_key(provider, api_key)
 
     output_dir = Path(output_dir)
@@ -220,13 +288,16 @@ def reconstruct_orbit(
     source_path = output_dir / "source.jpg"
     source.save(source_path, quality=92)
 
-    frames: list[dict[str, Any]] = []
+    generated: list[dict[str, Any]] = []
+
+    def public_frames() -> list[dict[str, Any]]:
+        return [_public_frame(f) for f in generated]
 
     def emit(message: str) -> None:
         meta = {
             "model": f"{provider}/{model}",
             "kind": "orbit",
-            "frames": frames,
+            "frames": public_frames(),
             "params": _params(
                 increment_deg,
                 start_deg,
@@ -238,41 +309,63 @@ def reconstruct_orbit(
                 model,
                 extra_prompt,
                 angles,
+                context_mode,
+                order_mode,
             ),
         }
         if on_progress:
             on_progress(message, meta)
 
-    for i, angle in enumerate(angles):
-        frame_name = f"{i:03d}_{int(round(angle))}deg.jpg"
+    for step, angle in enumerate(work_order):
+        frame_name = f"{int(round(angle)):03.0f}deg.jpg"
         frame_path = frames_dir / frame_name
-        use_original = i == 0 and abs(angle) < 1e-3
-        if use_original:
+        use_original = abs(angle) < 1e-3 or (not generated and abs(angle - angles[0]) < 1e-3)
+        context_angles: list[float] = []
+        if use_original and not generated:
             source.save(frame_path, quality=92)
+            image = source
             source_kind = "original"
         else:
-            emit(f"Generating {angle:.0f}° ({i + 1}/{len(angles)})…")
-            prompt = build_prompt(angle, elevation_deg, extra_prompt)
+            refs = select_context(angle, generated, mode=context_mode)
+            if not refs:
+                refs = [{"angle": 0.0, "image": source, "source": "original"}]
+            context_angles = [float(r["angle"]) for r in refs]
+            emit(
+                f"Generating {angle:.0f}° ({step + 1}/{len(work_order)}) "
+                f"· context {', '.join(f'{a:.0f}°' for a in context_angles)}"
+            )
+            prompt = build_prompt(
+                angle, elevation_deg, extra_prompt, context_angles=context_angles
+            )
             raw = generate_view(
-                source,
+                [r["image"] for r in refs],
                 provider=provider,
                 model=model,
                 prompt=prompt,
                 api_key=key,
             )
-            Image.open(BytesIO(raw)).convert("RGB").save(frame_path, quality=92)
+            image = Image.open(BytesIO(raw)).convert("RGB")
+            image.save(frame_path, quality=92)
             source_kind = "generated"
 
-        rec = {
-            "index": i,
-            "angle": angle,
-            "file": f"frames/{frame_name}",
-            "source": source_kind,
-            "xyz": camera_xyz(angle, elevation_deg, radius),
-        }
-        frames.append(rec)
-        emit(f"Ready {angle:.0f}° ({i + 1}/{len(angles)})")
+        generated.append(
+            {
+                "index": len(generated),
+                "angle": angle,
+                "file": f"frames/{frame_name}",
+                "source": source_kind,
+                "xyz": camera_xyz(angle, elevation_deg, radius),
+                "context_angles": context_angles,
+                "image": image,
+            }
+        )
+        emit(f"Ready {angle:.0f}° ({step + 1}/{len(work_order)})")
 
+    generated.sort(key=lambda f: float(f["angle"]))
+    for i, frame in enumerate(generated):
+        frame["index"] = i
+
+    frames = public_frames()
     meta = {
         "model": f"{provider}/{model}",
         "kind": "orbit",
@@ -290,10 +383,16 @@ def reconstruct_orbit(
             model,
             extra_prompt,
             angles,
+            context_mode,
+            order_mode,
         ),
     }
     (output_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
+
+
+def _public_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in frame.items() if k != "image"}
 
 
 def _params(
@@ -307,6 +406,8 @@ def _params(
     model: str,
     extra_prompt: str,
     angles: Iterable[float],
+    context_mode: str = "nearest",
+    order_mode: str = "bidirectional",
 ) -> dict[str, Any]:
     angle_list = list(angles)
     return {
@@ -319,6 +420,8 @@ def _params(
         "provider": provider,
         "model": model,
         "extra_prompt": extra_prompt,
+        "context_mode": context_mode,
+        "order_mode": order_mode,
         "angles": angle_list,
         "n_views": len(angle_list),
     }
