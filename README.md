@@ -4,7 +4,7 @@ Upload a **video or photos of a place** → reconstruct the **entire space** as 
 
 Whole-space product (4dv.ai-style navigation), **not** a single-object mesh generator.
 
-- Methods (reconstruct vs orbit): [METHODS.md](./METHODS.md)  
+- Methods (reconstruct, orbit, video 4D): [METHODS.md](./METHODS.md)  
 - Architecture: [PIPELINE.md](./PIPELINE.md)  
 - Reconstruct model research: [MODELS.md](./MODELS.md)
 
@@ -33,6 +33,7 @@ modal deploy modal_app.py
 |--------|------|--------|
 | `GET` | `/` | Reconstruct (video → 3DGS) |
 | `GET` | `/orbit` | Orbit views (still → image-model novel views) |
+| `GET` | `/4d` | Video 4D (video → time-sliced 4D-GS) |
 | `GET` | `/api/health` | Liveness + method list |
 | `POST` | `/api/jobs` | Reconstruct job |
 | `GET` | `/api/jobs/{id}` | Reconstruct status |
@@ -40,6 +41,9 @@ modal deploy modal_app.py
 | `POST` | `/api/orbit/jobs` | Orbit job (`increment_deg`, `elevation_deg`, provider, …) |
 | `GET` | `/api/orbit/jobs/{id}` | Orbit status + frames so far |
 | `GET` | `/api/orbit/jobs/{id}/frames/{i}` | Generated still |
+| `POST` | `/api/4d/jobs` | Video 4D job (`n_times`, frames, steps, …) |
+| `GET` | `/api/4d/jobs/{id}` | Video 4D status + timeline |
+| `GET` | `/api/4d/jobs/{id}/times/{i}` | Gaussian PLY at time *i* |
 
 ## Tips
 

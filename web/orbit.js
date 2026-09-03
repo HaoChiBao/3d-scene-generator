@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { deleteOrbit, getOrbit, listOrbits, orbitSummary, saveOrbit } from "/assets/orbit_store.js";
 import { downloadOrbitZip } from "/assets/orbit_zip.js";
 
-const PARAM_KEY = "scene-space-orbit-params";
+const PARAM_KEY = "scene-space-orbit-params-v2";
 const LAST_ID_KEY = "scene-space-orbit-last";
 
 const form = document.getElementById("orbit-form");
@@ -23,8 +23,7 @@ const angleLabel = document.getElementById("angle-label");
 const angleSlider = document.getElementById("angle-slider");
 const viewCountEl = document.getElementById("view-count");
 const filmstrip = document.getElementById("filmstrip");
-const providerEl = document.getElementById("provider");
-const modelEl = document.getElementById("model");
+const imageModelEl = document.getElementById("image-model");
 const keyStatusEl = document.getElementById("key-status");
 const apiKeyWrap = document.getElementById("api-key-wrap");
 const savedWrap = document.getElementById("saved-wrap");
@@ -36,15 +35,23 @@ const focusSource = document.getElementById("focus-source");
 
 let serverProviders = { gemini: false, openai: false };
 
-const DEFAULT_MODELS = {
-  gemini: "gemini-2.5-flash-image",
-  openai: "gpt-image-1",
-};
+function setHidden(el, hidden) {
+  if (el) el.hidden = !!hidden;
+}
+
+function selectedImageModel() {
+  const raw = (imageModelEl?.value || "openai:gpt-image-2").trim();
+  const sep = raw.indexOf(":");
+  if (sep < 1) return { provider: "openai", model: raw || "gpt-image-2" };
+  return { provider: raw.slice(0, sep), model: raw.slice(sep + 1) };
+}
+
+bindFilePicker();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setClearColor(0xffffff, 1);
-host.appendChild(renderer.domElement);
+host?.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xffffff);
@@ -108,12 +115,13 @@ function params() {
     end: clampNum("end-deg", 10, 360, 360),
     radius: clampNum("radius", 0.6, 8, 2.4),
     fov: clampNum("fov", 20, 90, 45),
-    provider: providerEl.value,
-    model: modelEl.value.trim(),
-    extra: document.getElementById("extra-prompt").value,
-    apiKey: document.getElementById("api-key").value,
-    contextMode: document.getElementById("context-mode").value,
-    orderMode: document.getElementById("order-mode").value,
+    provider: selectedImageModel().provider,
+    model: selectedImageModel().model,
+    extra: document.getElementById("extra-prompt")?.value || "",
+    apiKey: document.getElementById("api-key")?.value || "",
+    contextMode: document.getElementById("context-mode")?.value || "adaptive",
+    orderMode: document.getElementById("order-mode")?.value || "cardinal",
+    originalLock: clampNum("original-lock", 0, 180, 60),
   };
 }
 
@@ -124,7 +132,8 @@ function persistableParams() {
 }
 
 function clampNum(id, min, max, fallback) {
-  const n = Number(document.getElementById(id).value);
+  const el = document.getElementById(id);
+  const n = Number(el?.value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }
@@ -162,11 +171,23 @@ function restoreParams() {
     for (const [key, id] of Object.entries(map)) {
       if (saved[key] != null) document.getElementById(id).value = saved[key];
     }
-    if (saved.provider) providerEl.value = saved.provider;
-    if (saved.model) modelEl.value = saved.model;
-    if (saved.extra != null) document.getElementById("extra-prompt").value = saved.extra;
-    if (saved.contextMode) document.getElementById("context-mode").value = saved.contextMode;
-    if (saved.orderMode) document.getElementById("order-mode").value = saved.orderMode;
+    if (saved.provider && saved.model && imageModelEl) {
+      const combo = `${saved.provider}:${saved.model}`;
+      const match = [...imageModelEl.options].some((opt) => opt.value === combo);
+      if (match) imageModelEl.value = combo;
+    }
+    if (saved.extra != null) {
+      const extra = document.getElementById("extra-prompt");
+      if (extra) extra.value = saved.extra;
+    }
+    if (saved.originalLock != null) {
+      const lock = document.getElementById("original-lock");
+      if (lock) lock.value = saved.originalLock;
+    }
+    const contextEl = document.getElementById("context-mode");
+    const orderEl = document.getElementById("order-mode");
+    if (saved.contextMode && contextEl) contextEl.value = saved.contextMode;
+    if (saved.orderMode && orderEl) orderEl.value = saved.orderMode;
   } catch {
     /* ignore bad cache */
   }
@@ -251,21 +272,39 @@ function placeFrustum(angle) {
   frustumGroup.position.copy(pos);
   frustumGroup.lookAt(look);
   currentAngle = angle;
-  angleLabel.textContent = `${Math.round(angle)}°`;
-  angleSlider.value = String(angle);
+  if (angleLabel) angleLabel.textContent = `${Math.round(angle)}°`;
+  if (angleSlider) angleSlider.value = String(angle);
+}
+
+function textureFromImage(img) {
+  const tex = new THREE.Texture(img);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function loadTexture(url, onLoad) {
+  if (!url) return;
+  if (url.startsWith("blob:") || url.startsWith("data:")) {
+    const img = new Image();
+    img.onload = () => onLoad(textureFromImage(img));
+    img.onerror = () => console.warn("Could not decode still", url);
+    img.src = url;
+    return;
+  }
+  const loader = new THREE.TextureLoader();
+  loader.setCrossOrigin("anonymous");
+  loader.load(url, onLoad, undefined, (err) => console.warn("Texture load failed", err));
 }
 
 function setPlaneMap(url) {
   if (!url) return;
   const token = (mapToken += 1);
-  const loader = new THREE.TextureLoader();
-  loader.setCrossOrigin("anonymous");
-  loader.load(url, (tex) => {
+  loadTexture(url, (tex) => {
     if (token !== mapToken) {
       tex.dispose();
       return;
     }
-    tex.colorSpace = THREE.SRGBColorSpace;
     if (!imagePlane?.material) return;
     const old = imagePlane.material.map;
     imagePlane.material.map = tex;
@@ -274,15 +313,19 @@ function setPlaneMap(url) {
   });
 }
 
-function showViewing(on) {
-  viewportEl.classList.toggle("is-viewing", on);
-  orbitFocus.hidden = !on;
-  emptyEl.hidden = on;
-  emptyEl.classList.toggle("hidden", on);
-  angleHud.hidden = !on;
-  if (on) {
-    hintEl.textContent = "Scroll or use the slider to step through angles";
+function showViewing(focusOnFlat) {
+  const hasImage = Boolean(localImageUrl || frames.length);
+  viewportEl?.classList.toggle("is-viewing", Boolean(focusOnFlat && hasImage));
+  setHidden(orbitFocus, !(focusOnFlat && hasImage));
+  setHidden(emptyEl, hasImage);
+  emptyEl?.classList.toggle("hidden", hasImage);
+  setHidden(angleHud, !hasImage);
+  if (hasImage && hintEl) {
+    hintEl.textContent = focusOnFlat
+      ? "Scroll or use the slider to step through angles"
+      : "Drag to orbit the diagram · slider moves the camera";
   }
+  resize();
 }
 
 function showFocus(frame) {
@@ -291,69 +334,129 @@ function showFocus(frame) {
     showViewing(false);
     return;
   }
-  showViewing(true);
-  focusImg.src = url;
+  const scrubbing = frames.some((f) => f.source === "generated");
+  showViewing(scrubbing);
+  if (focusImg) focusImg.src = url;
   const angle = frame ? frame.angle : currentAngle;
-  focusAngle.textContent = `${Math.round(angle)}°`;
-  focusSource.textContent = frame
-    ? frame.source === "original"
-      ? "Original"
-      : "Generated"
-    : "Original";
-  setPlaneMap(url);
+  if (focusAngle) focusAngle.textContent = `${Math.round(angle)}°`;
+  if (focusSource) {
+    focusSource.textContent = frame
+      ? frame.source === "original"
+        ? "Original"
+        : "Generated"
+      : "Original";
+  }
+  if (imagePlane) setPlaneMap(url);
 }
 
-function setImageTexture(url, width, height) {
+function applyPhotoTexture(tex, width, height) {
   imageAspect = width / Math.max(height, 1);
-  const loader = new THREE.TextureLoader();
-  loader.setCrossOrigin("anonymous");
-  loader.load(url, (tex) => {
-    tex.colorSpace = THREE.SRGBColorSpace;
-    const h = 1.25;
-    const w = h * imageAspect;
-    while (imageGroup.children.length) {
-      const child = imageGroup.children[0];
-      imageGroup.remove(child);
-      child.geometry?.dispose?.();
-      child.material?.dispose?.();
-    }
-    const border = new THREE.Mesh(
-      new THREE.PlaneGeometry(w + 0.03, h + 0.03),
-      new THREE.MeshBasicMaterial({ color: 0xb7d6ff, side: THREE.DoubleSide })
-    );
-    const photo = new THREE.Mesh(
-      new THREE.PlaneGeometry(w, h),
-      new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
-    );
-    photo.position.z = 0.002;
-    imagePlane = photo;
-    imagePlane.position.y = h / 2;
-    border.position.y = h / 2;
-    imageGroup.add(border);
-    imageGroup.add(photo);
-    shadow.scale.set(w * 1.05, 1, 0.55);
-    rebuildFrustum();
-    showFocus(frameForAngle(currentAngle));
-    resize();
-  });
+  const h = 1.25;
+  const w = h * imageAspect;
+  while (imageGroup.children.length) {
+    const child = imageGroup.children[0];
+    imageGroup.remove(child);
+    child.geometry?.dispose?.();
+    child.material?.dispose?.();
+  }
+  const border = new THREE.Mesh(
+    new THREE.PlaneGeometry(w + 0.03, h + 0.03),
+    new THREE.MeshBasicMaterial({ color: 0xb7d6ff, side: THREE.DoubleSide })
+  );
+  const photo = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
+  );
+  photo.position.z = 0.002;
+  imagePlane = photo;
+  imagePlane.position.y = h / 2;
+  border.position.y = h / 2;
+  imageGroup.add(border);
+  imageGroup.add(photo);
+  shadow.scale.set(w * 1.05, 1, 0.55);
+  rebuildFrustum();
+  showFocus(frameForAngle(currentAngle));
+  resize();
+}
+
+function setImageTexture(url, width, height, sourceImage) {
+  if (sourceImage) {
+    applyPhotoTexture(textureFromImage(sourceImage), width, height);
+    return;
+  }
+  loadTexture(url, (tex) => applyPhotoTexture(tex, width, height));
 }
 
 function loadStill(blob, name, angle = 0) {
+  if (!blob) return;
   if (localImageUrl) URL.revokeObjectURL(localImageUrl);
   originalBlob = blob;
   originalName = name || "still.jpg";
   localImageUrl = URL.createObjectURL(blob);
-  fileLabel.textContent = originalName;
-  fileInput.removeAttribute("required");
+  if (fileLabel) fileLabel.textContent = originalName;
+  fileInput?.removeAttribute("required");
+  if (focusImg) focusImg.src = localImageUrl;
+  showViewing(false);
   const probe = new Image();
   probe.onload = () => {
     currentAngle = angle;
-    setImageTexture(localImageUrl, probe.width, probe.height);
+    setImageTexture(localImageUrl, probe.width, probe.height, probe);
   };
+  probe.onerror = () => setStatus("Could not read that image", "error");
   probe.src = localImageUrl;
 }
 
+function acceptStill(file) {
+  if (!file) return;
+  if (file.type && !file.type.startsWith("image/")) {
+    setStatus("Use a PNG or JPG still", "error");
+    return;
+  }
+  revokeFrameUrls(frames);
+  frames = [];
+  jobId = null;
+  sessionId = `draft-${Date.now()}`;
+  setHidden(filmstrip, true);
+  setHidden(downloadBtn, true);
+  if (fileLabel) fileLabel.textContent = file.name || "still.jpg";
+  let start = 0;
+  try {
+    start = params().start;
+  } catch {
+    start = 0;
+  }
+  loadStill(file, file.name, start);
+  persistParams();
+  scheduleSave();
+}
+
+function bindFilePicker() {
+  const zone = fileInput?.closest("label.file") || fileInput;
+  fileInput?.addEventListener("change", () => {
+    acceptStill(fileInput.files?.[0]);
+  });
+  if (!zone) return;
+  for (const type of ["dragenter", "dragover"]) {
+    zone.addEventListener(type, (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      zone.classList.add("is-drop");
+    });
+  }
+  zone.addEventListener("dragleave", (event) => {
+    event.preventDefault();
+    zone.classList.remove("is-drop");
+  });
+  zone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    zone.classList.remove("is-drop");
+    acceptStill(event.dataTransfer?.files?.[0]);
+  });
+}
+
 function resize() {
+  if (!host) return;
   const { clientWidth: w, clientHeight: h } = host;
   renderer.setSize(w, h, false);
   viewCam.aspect = w / Math.max(h, 1);
@@ -367,7 +470,8 @@ function animate() {
 }
 
 function setStatus(text, kind = "") {
-  statusEl.hidden = false;
+  if (!statusEl) return;
+  setHidden(statusEl, false);
   statusEl.className = `status ${kind}`.trim();
   statusEl.textContent = text;
 }
@@ -425,8 +529,8 @@ function highlightFilmstrip(frame) {
 }
 
 function renderFilmstrip() {
-  filmstrip.hidden = frames.length === 0;
-  downloadBtn.hidden = frames.length === 0;
+  setHidden(filmstrip, frames.length === 0);
+  setHidden(downloadBtn, frames.length === 0);
   filmstrip.innerHTML = "";
   const current = frameForAngle(currentAngle);
   for (const frame of frames) {
@@ -534,7 +638,12 @@ async function applyRecord(record) {
     objectUrl: f.blob ? URL.createObjectURL(f.blob) : "",
   }));
   if (record.params) {
-    localStorage.setItem(PARAM_KEY, JSON.stringify(record.params));
+    const saved = { ...record.params };
+    if (saved.originalLock == null && (saved.contextMode === "nearest" || saved.orderMode === "bidirectional")) {
+      delete saved.contextMode;
+      delete saved.orderMode;
+    }
+    localStorage.setItem(PARAM_KEY, JSON.stringify(saved));
     restoreParams();
     refreshViewCount();
   }
@@ -550,8 +659,9 @@ async function applyRecord(record) {
 
 async function refreshSavedList() {
   const rows = await listOrbits();
+  if (!savedList) return;
   savedList.innerHTML = "";
-  savedWrap.hidden = rows.length === 0;
+  setHidden(savedWrap, rows.length === 0);
   for (const row of rows) {
     const info = orbitSummary(row);
     const li = document.createElement("li");
@@ -568,7 +678,7 @@ async function refreshSavedList() {
 }
 
 ["increment", "start-deg", "end-deg", "elevation", "radius", "fov"].forEach((id) => {
-  document.getElementById(id).addEventListener("input", () => {
+  document.getElementById(id)?.addEventListener("input", () => {
     refreshViewCount();
     rebuildFrustum();
     persistParams();
@@ -576,8 +686,8 @@ async function refreshSavedList() {
   });
 });
 
-["context-mode", "order-mode", "provider", "model", "extra-prompt"].forEach((id) => {
-  document.getElementById(id).addEventListener("change", persistParams);
+["context-mode", "order-mode", "original-lock", "image-model", "extra-prompt"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("change", persistParams);
 });
 
 function refreshKeyStatus() {
@@ -585,11 +695,21 @@ function refreshKeyStatus() {
   if (serverProviders.gemini) ready.push("Gemini");
   if (serverProviders.openai) ready.push("OpenAI");
   if (ready.length) {
-    keyStatusEl.textContent = `Using ${ready.join(" + ")} keys from the server`;
-    apiKeyWrap.hidden = true;
+    if (keyStatusEl) keyStatusEl.textContent = `Using ${ready.join(" + ")} keys from the server`;
+    setHidden(apiKeyWrap, true);
   } else {
-    keyStatusEl.textContent = "No server keys — paste an API key below";
-    apiKeyWrap.hidden = false;
+    if (keyStatusEl) keyStatusEl.textContent = "No server keys — paste an API key below";
+    setHidden(apiKeyWrap, false);
+  }
+  if (imageModelEl) {
+    for (const opt of imageModelEl.options) {
+      const provider = opt.value.split(":")[0];
+      opt.disabled = serverProviders[provider] === false;
+    }
+    if (imageModelEl.selectedOptions[0]?.disabled) {
+      const next = [...imageModelEl.options].find((opt) => !opt.disabled);
+      if (next) imageModelEl.value = next.value;
+    }
   }
 }
 
@@ -604,34 +724,15 @@ async function loadServerKeys() {
   refreshKeyStatus();
 }
 
-providerEl.addEventListener("change", () => {
-  modelEl.value = DEFAULT_MODELS[providerEl.value] || modelEl.value;
-  persistParams();
-});
-
-fileInput.addEventListener("change", () => {
-  const file = fileInput.files?.[0];
-  if (!file) return;
-  revokeFrameUrls(frames);
-  frames = [];
-  jobId = null;
-  sessionId = `draft-${Date.now()}`;
-  filmstrip.hidden = true;
-  downloadBtn.hidden = true;
-  loadStill(file, file.name, params().start);
-  persistParams();
-  scheduleSave();
-});
-
-angleSlider.addEventListener("input", () => {
+angleSlider?.addEventListener("input", () => {
   selectAngle(Number(angleSlider.value));
   scheduleSave();
 });
 
-viewportEl.addEventListener(
+viewportEl?.addEventListener(
   "wheel",
   (event) => {
-    if (orbitFocus.hidden) return;
+    if (!orbitFocus || orbitFocus.hidden) return;
     if (event.target.closest(".filmstrip, #orbit-host")) return;
     event.preventDefault();
     const now = performance.now();
@@ -658,7 +759,7 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-savedList.addEventListener("click", async (event) => {
+savedList?.addEventListener("click", async (event) => {
   const del = event.target.closest(".saved-delete");
   if (del) {
     await deleteOrbit(del.dataset.id);
@@ -674,7 +775,7 @@ savedList.addEventListener("click", async (event) => {
   if (record) await applyRecord(record);
 });
 
-downloadBtn.addEventListener("click", async () => {
+downloadBtn?.addEventListener("click", async () => {
   if (!frames.length) return;
   downloadBtn.disabled = true;
   try {
@@ -703,7 +804,7 @@ async function pollJob(id) {
       await hydrateIncoming(data.meta.frames);
     }
     if (data.status === "succeeded") {
-      metaWrap.hidden = false;
+      setHidden(metaWrap, false);
       metaEl.textContent = JSON.stringify(data.meta ?? data, null, 2);
       if (Array.isArray(data.meta?.frames)) {
         await hydrateIncoming(data.meta.frames);
@@ -718,7 +819,7 @@ async function pollJob(id) {
   }
 }
 
-form.addEventListener("submit", async (event) => {
+form?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const file = fileInput.files?.[0] || originalBlob;
   if (!file) {
@@ -734,7 +835,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   submitBtn.disabled = true;
-  metaWrap.hidden = true;
+  setHidden(metaWrap, true);
   setStatus(`Uploading… ${angles.length} views queued`);
 
   try {
@@ -751,6 +852,7 @@ form.addEventListener("submit", async (event) => {
     body.append("extra_prompt", p.extra);
     body.append("context_mode", p.contextMode);
     body.append("order_mode", p.orderMode);
+    body.append("original_lock_deg", String(p.originalLock));
     if (p.apiKey) body.append("api_key", p.apiKey);
 
     const res = await fetch("/api/orbit/jobs", { method: "POST", body });
@@ -772,22 +874,26 @@ form.addEventListener("submit", async (event) => {
 });
 
 async function boot() {
-  restoreParams();
-  refreshViewCount();
-  loadServerKeys();
-  resize();
-  animate();
-  await refreshSavedList();
-  let lastId = null;
   try {
-    lastId = localStorage.getItem(LAST_ID_KEY);
-  } catch {
-    lastId = null;
+    restoreParams();
+    refreshViewCount();
+    loadServerKeys();
+    resize();
+    animate();
+    await refreshSavedList();
+    let lastId = null;
+    try {
+      lastId = localStorage.getItem(LAST_ID_KEY);
+    } catch {
+      lastId = null;
+    }
+    const record = (lastId && (await getOrbit(lastId))) || (await listOrbits())[0];
+    if (record) await applyRecord(record);
+  } catch (err) {
+    console.warn("Orbit boot failed", err);
   }
-  const record = (lastId && (await getOrbit(lastId))) || (await listOrbits())[0];
-  if (record) await applyRecord(record);
 }
 
 window.addEventListener("resize", resize);
-new ResizeObserver(resize).observe(host);
+if (host) new ResizeObserver(resize).observe(host);
 boot();
