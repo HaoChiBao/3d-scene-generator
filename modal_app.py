@@ -216,6 +216,82 @@ class SceneReconstructor:
             artifact_vol.commit()
             raise
 
+    @modal.method()
+    def reconstruct_4d(
+        self,
+        job_id: str,
+        filename: str,
+        media_bytes: bytes,
+        *,
+        target_fps: float = 4.0,
+        max_frames: int = 24,
+        train_steps: int = 8000,
+        resize_long_edge: int = 768,
+        n_times: int = 8,
+    ) -> dict:
+        from scene_gen.video4d import reconstruct_video_4d
+
+        prev = dict(jobs[job_id]) if job_id in jobs else {"id": job_id, "kind": "video4d"}
+
+        def set_status(message: str) -> None:
+            jobs[job_id] = {
+                **prev,
+                "status": "running",
+                "message": message,
+                "kind": "video4d",
+                "model": "video4d",
+            }
+
+        set_status("Starting GPU worker…")
+        out = _job_dir(job_id)
+        out.mkdir(parents=True, exist_ok=True)
+        media_path = out / filename
+        media_path.write_bytes(media_bytes)
+
+        try:
+            hf_vol.reload()
+            set_status("Loading VGGT / fitting 4D Gaussians…")
+            meta = reconstruct_video_4d(
+                media_path,
+                out,
+                max_frames=int(max_frames),
+                target_fps=float(target_fps),
+                resize_long_edge=int(resize_long_edge),
+                train_steps=int(train_steps),
+                n_times=int(n_times),
+                on_progress=set_status,
+            )
+            try:
+                hf_vol.commit()
+            except Exception as commit_exc:  # noqa: BLE001
+                print(f"HF cache commit skipped: {commit_exc}", flush=True)
+            artifact_vol.commit()
+            result = {
+                **prev,
+                "status": "succeeded",
+                "message": (
+                    f"4D scene with {meta.get('n_gaussians') or '?'} Gaussians, "
+                    f"{meta.get('n_times')} time slices"
+                ),
+                "meta": meta,
+                "ply_url": f"/api/jobs/{job_id}/gaussians.ply",
+                "viewer": "splat",
+                "kind": "video4d",
+                "model": "video4d",
+            }
+            jobs[job_id] = result
+            return result
+        except Exception as exc:  # noqa: BLE001
+            jobs[job_id] = {
+                **prev,
+                "status": "failed",
+                "message": str(exc),
+                "kind": "video4d",
+                "model": "video4d",
+            }
+            artifact_vol.commit()
+            raise
+
 
 @app.function(
     image=web_image,
@@ -268,8 +344,9 @@ def run_orbit(
             model=params.get("model"),
             extra_prompt=str(params.get("extra_prompt") or ""),
             api_key=params.get("api_key"),
-            context_mode=str(params.get("context_mode") or "nearest"),
-            order_mode=str(params.get("order_mode") or "bidirectional"),
+            context_mode=str(params.get("context_mode") or "adaptive"),
+            order_mode=str(params.get("order_mode") or "cardinal"),
+            original_lock_deg=float(params.get("original_lock_deg") or 60),
             on_progress=set_status,
         )
         artifact_vol.commit()
@@ -339,7 +416,12 @@ def api():
                 {
                     "id": "orbit",
                     "path": "/orbit",
-                    "model": "gemini-2.5-flash-image / gpt-image-1",
+                    "model": "gpt-image-2 / gemini-3.1-flash-image",
+                },
+                {
+                    "id": "video4d",
+                    "path": "/4d",
+                    "model": "VGGT + 4D-GS (canonical + deform)",
                 },
             ],
         }
@@ -422,12 +504,15 @@ def api():
         model = str(form.get("model") or "").strip() or None
         extra_prompt = str(form.get("extra_prompt") or "")
         api_key = str(form.get("api_key") or "").strip() or None
-        context_mode = str(form.get("context_mode") or "nearest").strip().lower()
-        order_mode = str(form.get("order_mode") or "bidirectional").strip().lower()
-        if context_mode not in ("nearest", "previous", "original"):
-            raise HTTPException(400, "context_mode must be nearest, previous, or original")
-        if order_mode not in ("bidirectional", "sequential"):
-            raise HTTPException(400, "order_mode must be bidirectional or sequential")
+        context_mode = str(form.get("context_mode") or "adaptive").strip().lower()
+        order_mode = str(form.get("order_mode") or "cardinal").strip().lower()
+        original_lock_deg = float(form.get("original_lock_deg") or 60)
+        if context_mode not in ("adaptive", "nearest", "previous", "original"):
+            raise HTTPException(
+                400, "context_mode must be adaptive, nearest, previous, or original"
+            )
+        if order_mode not in ("cardinal", "bidirectional", "sequential"):
+            raise HTTPException(400, "order_mode must be cardinal, bidirectional, or sequential")
 
         increment_deg = max(5, min(increment_deg, 90))
         start_deg = max(0, min(start_deg, 350))
@@ -467,9 +552,100 @@ def api():
                 "api_key": api_key,
                 "context_mode": context_mode,
                 "order_mode": order_mode,
+                "original_lock_deg": max(0, min(original_lock_deg, 180)),
             },
         )
         return {"id": job_id, "status": "queued", "kind": "orbit"}
+
+    @web.post("/api/4d/jobs")
+    async def create_4d_job(request: Request):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            raise HTTPException(400, "Missing file")
+
+        filename = getattr(upload, "filename", None) or "upload.bin"
+        data = await upload.read()
+        if not data:
+            raise HTTPException(400, "Empty upload")
+        if len(data) > 200 * 1024 * 1024:
+            raise HTTPException(400, "File too large (max 200MB)")
+
+        target_fps = float(form.get("target_fps") or 4.0)
+        max_frames = int(form.get("max_frames") or 24)
+        train_steps = int(form.get("train_steps") or 8000)
+        resize_long_edge = int(form.get("resize") or 768)
+        n_times = int(form.get("n_times") or 8)
+
+        max_frames = max(8, min(max_frames, 48))
+        train_steps = max(2000, min(train_steps, 15000))
+        target_fps = max(0.5, min(target_fps, 12.0))
+        n_times = max(4, min(n_times, 16))
+        resize_long_edge = max(512, min(resize_long_edge, 1024))
+
+        job_id = uuid.uuid4().hex[:12]
+        await jobs.put.aio(
+            job_id,
+            {
+                "id": job_id,
+                "status": "queued",
+                "kind": "video4d",
+                "message": (
+                    "Queued — waiting for GPU. VGGT first, then 4D Gaussian training."
+                ),
+                "filename": filename,
+                "model": "video4d",
+            },
+        )
+        await SceneReconstructor().reconstruct_4d.spawn.aio(
+            job_id,
+            filename,
+            data,
+            target_fps=target_fps,
+            max_frames=max_frames,
+            train_steps=train_steps,
+            resize_long_edge=resize_long_edge,
+            n_times=n_times,
+        )
+        return {"id": job_id, "status": "queued", "kind": "video4d"}
+
+    @web.get("/api/4d/jobs/{job_id}")
+    async def get_4d_job(job_id: str):
+        data = await jobs.get.aio(job_id)
+        if data is None:
+            raise HTTPException(404, "Job not found")
+        return data
+
+    @web.get("/api/4d/jobs/{job_id}/times/{index}")
+    def get_4d_time(job_id: str, index: int):
+        artifact_vol.reload()
+        job = _job_dir(job_id)
+        frames = []
+        meta_path = job / "timeline.json"
+        if not meta_path.exists():
+            meta_path = job / "meta.json"
+        if meta_path.exists():
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            frames = payload.get("times") or []
+        else:
+            live = jobs.get(job_id) or {}
+            frames = (live.get("meta") or {}).get("times") or []
+        if 0 <= index < len(frames):
+            path = job / frames[index]["file"]
+            if path.exists():
+                return FileResponse(
+                    path,
+                    media_type="application/octet-stream",
+                    filename=f"{job_id}_t{index:03d}.ply",
+                )
+        matches = sorted((job / "times").glob("t*.ply")) if (job / "times").exists() else []
+        if 0 <= index < len(matches):
+            return FileResponse(
+                matches[index],
+                media_type="application/octet-stream",
+                filename=f"{job_id}_{matches[index].name}",
+            )
+        raise HTTPException(404, "Time slice not ready")
 
     @web.get("/api/orbit/jobs/{job_id}")
     async def get_orbit_job(job_id: str):
@@ -567,5 +743,9 @@ def api():
         @web.get("/orbit")
         def orbit():
             return HTMLResponse((static_dir / "orbit.html").read_text(encoding="utf-8"))
+
+        @web.get("/4d")
+        def video4d():
+            return HTMLResponse((static_dir / "video4d.html").read_text(encoding="utf-8"))
 
     return web

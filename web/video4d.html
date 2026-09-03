@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Scene Space</title>
+    <title>Video 4D — Scene Space</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -26,42 +26,43 @@
       <aside class="panel">
         <header class="panel-top">
           <p class="brand">Scene Space</p>
-          <p class="model-tag">recon3d · VGGT + gsplat</p>
+          <p class="model-tag">Video 4D · VGGT + deform</p>
         </header>
 
         <nav class="method-nav" aria-label="Methods">
-          <a href="/" class="method-link active">Reconstruct</a>
+          <a href="/" class="method-link">Reconstruct</a>
           <a href="/orbit" class="method-link">Orbit views</a>
-          <a href="/4d" class="method-link">Video 4D</a>
+          <a href="/4d" class="method-link active">Video 4D</a>
         </nav>
 
-        <h1>Capture a space.<br /><span>Explore it in 3D.</span></h1>
+        <h1>Video in.<br /><span>Play it in 4D.</span></h1>
         <p class="lede">
-          Upload a short walkthrough with camera motion. We estimate poses with
-          VGGT, then train a per-scene Gaussian splat&nbsp;(recon3d).
+          Estimate cameras, then fit a time-varying Gaussian scene (4D-GS).
+          Slider scrubs time; drag to orbit. This is CAT4D’s reconstruct
+          stage, not their unpublished view-synthesis model.
         </p>
 
         <form id="upload-form">
           <label class="file">
-            <input id="file" type="file" accept="image/*,video/*" required />
-            <span class="file-title" id="file-label">Drop video or images</span>
-            <span class="file-sub">Walk/orbit video · MP4, MOV · ≥3 views</span>
+            <input id="file" type="file" accept="video/*" required />
+            <span class="file-title" id="file-label">Drop a video</span>
+            <span class="file-sub">MP4, MOV · people or objects that move</span>
           </label>
 
           <div class="row">
             <label>
               Max frames
-              <input id="max-frames" type="number" min="3" max="80" value="48" />
+              <input id="max-frames" type="number" min="8" max="48" value="24" />
             </label>
             <label>
               Sample fps
               <input
                 id="target-fps"
                 type="number"
-                min="0.2"
-                max="5"
-                step="0.2"
-                value="2"
+                min="0.5"
+                max="12"
+                step="0.5"
+                value="4"
               />
             </label>
           </div>
@@ -72,19 +73,26 @@
               <input
                 id="train-steps"
                 type="number"
-                min="1000"
+                min="2000"
                 max="15000"
                 step="500"
-                value="7000"
+                value="8000"
               />
             </label>
             <label>
-              Resize
-              <input id="resize" type="number" min="512" max="1280" step="64" value="960" />
+              Time slices
+              <input id="n-times" type="number" min="4" max="16" step="1" value="8" />
             </label>
           </div>
 
-          <button type="submit" id="submit">Generate scene</button>
+          <div class="row">
+            <label>
+              Resize
+              <input id="resize" type="number" min="512" max="1024" step="64" value="768" />
+            </label>
+          </div>
+
+          <button type="submit" id="submit">Generate 4D scene</button>
         </form>
 
         <div id="status" class="status" hidden></div>
@@ -97,13 +105,22 @@
       <main class="viewport">
         <div id="canvas-host"></div>
         <div id="empty" class="empty">
-          <p class="empty-title">No scene yet</p>
+          <p class="empty-title">No 4D scene yet</p>
           <p id="hint" class="hint">
-            Upload a walkthrough video — reconstruction usually takes a few minutes
+            Upload a short clip — first GPU run downloads VGGT, then trains for several minutes
           </p>
+        </div>
+        <div id="time-hud" class="time-hud" hidden>
+          <div class="time-readout">
+            <span id="time-label">t = 0.00</span>
+            <div class="time-controls">
+              <button type="button" id="play" class="secondary time-play">Play</button>
+              <input id="time-slider" type="range" min="0" max="7" step="1" value="0" />
+            </div>
+          </div>
         </div>
       </main>
     </div>
-    <script type="module" src="/assets/app.js"></script>
+    <script type="module" src="/assets/video4d.js"></script>
   </body>
 </html>

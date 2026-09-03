@@ -31,6 +31,7 @@
         <nav class="method-nav" aria-label="Methods">
           <a href="/" class="method-link">Reconstruct</a>
           <a href="/orbit" class="method-link active">Orbit views</a>
+          <a href="/4d" class="method-link">Video 4D</a>
         </nav>
 
         <h1>Orbit a still.<br /><span>Synthesize each view.</span></h1>
@@ -83,7 +84,8 @@
             <label>
               Context
               <select id="context-mode">
-                <option value="nearest" selected>Original + nearest</option>
+                <option value="adaptive" selected>Adaptive (drop front when far)</option>
+                <option value="nearest">Original + nearest</option>
                 <option value="previous">Original + previous</option>
                 <option value="original">Original only</option>
               </select>
@@ -91,25 +93,43 @@
             <label>
               Order
               <select id="order-mode">
-                <option value="bidirectional" selected>Bidirectional</option>
+                <option value="cardinal" selected>Cardinal first</option>
+                <option value="bidirectional">Bidirectional</option>
                 <option value="sequential">Sequential</option>
               </select>
             </label>
           </div>
 
-          <div class="row">
-            <label>
-              Provider
-              <select id="provider">
-                <option value="gemini" selected>Gemini</option>
-                <option value="openai">OpenAI</option>
-              </select>
-            </label>
-            <label>
-              Model
-              <input id="model" type="text" value="gemini-2.5-flash-image" />
-            </label>
-          </div>
+          <label>
+            Front lock (deg)
+            <input id="original-lock" type="number" min="0" max="180" step="5" value="60" />
+          </label>
+
+          <label>
+            Image model
+            <select id="image-model">
+              <option value="openai:gpt-image-2" selected>
+                GPT Image 2 — OpenAI · highest realism
+              </option>
+              <option value="gemini:gemini-3.1-flash-image">
+                Nano Banana 2 — Gemini · best price / quality
+              </option>
+              <option value="gemini:gemini-3-pro-image">
+                Nano Banana Pro — Gemini · highest Gemini quality
+              </option>
+              <option value="openai:gpt-image-1.5">GPT Image 1.5 — OpenAI</option>
+              <option value="openai:gpt-image-1">GPT Image 1 — OpenAI</option>
+              <option value="gemini:gemini-2.5-flash-image">
+                Nano Banana — Gemini 2.5 Flash Image
+              </option>
+              <option value="openai:gpt-image-1-mini">
+                GPT Image 1 Mini — OpenAI · cheapest OpenAI
+              </option>
+              <option value="gemini:gemini-3.1-flash-lite-image">
+                Nano Banana 2 Lite — Gemini · cheapest
+              </option>
+            </select>
+          </label>
 
           <label>
             Extra prompt
