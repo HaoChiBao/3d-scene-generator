@@ -4,8 +4,9 @@ Upload a **video or photos of a place** → reconstruct the **entire space** as 
 
 Whole-space product (4dv.ai-style navigation), **not** a single-object mesh generator.
 
+- Methods (reconstruct vs orbit): [METHODS.md](./METHODS.md)  
 - Architecture: [PIPELINE.md](./PIPELINE.md)  
-- Model research (papers, download, why this stack): [MODELS.md](./MODELS.md)
+- Reconstruct model research: [MODELS.md](./MODELS.md)
 
 ## Model
 
@@ -30,11 +31,15 @@ modal deploy modal_app.py
 
 | Method | Path | Notes |
 |--------|------|--------|
-| `GET` | `/api/health` | Liveness + model name |
-| `POST` | `/api/jobs` | multipart: `file`, optional `max_frames`, `target_fps`, `train_steps`, `resize` |
-| `GET` | `/api/jobs/{id}` | Job status |
-| `GET` | `/api/jobs/{id}/gaussians.ply` | Primary 3DGS asset |
-| `GET` | `/api/jobs/{id}/meta.json` | Timings / flags |
+| `GET` | `/` | Reconstruct (video → 3DGS) |
+| `GET` | `/orbit` | Orbit views (still → image-model novel views) |
+| `GET` | `/api/health` | Liveness + method list |
+| `POST` | `/api/jobs` | Reconstruct job |
+| `GET` | `/api/jobs/{id}` | Reconstruct status |
+| `GET` | `/api/jobs/{id}/gaussians.ply` | 3DGS asset |
+| `POST` | `/api/orbit/jobs` | Orbit job (`increment_deg`, `elevation_deg`, provider, …) |
+| `GET` | `/api/orbit/jobs/{id}` | Orbit status + frames so far |
+| `GET` | `/api/orbit/jobs/{id}/frames/{i}` | Generated still |
 
 ## Tips
 

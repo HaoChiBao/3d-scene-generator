@@ -39,20 +39,22 @@ Tried in production. Feed-forward 3DGS is fast but novel views looked wrong for 
 | Full HY-World gen | Generative single image | Later / heavy |
 | TRELLIS / Hunyuan3D | ❌ | Object assets, wrong product |
 
+## Methods
+
+See **[METHODS.md](./METHODS.md)**. Reconstruct (`/`) is this pipeline. Orbit views (`/orbit`) is a separate image-model experiment.
+
 ## Architecture
 
 ```
-Browser (upload + Gaussian splat viewer)
+Browser
+  /           reconstruct UI + splat viewer
+  /orbit      still + 3D frustum diagram + generated views
         │
         ▼
-Modal FastAPI  ── jobs Dict + artifacts Volume
+Modal FastAPI (CPU image)
         │
-        ▼
-Modal GPU (A100) — recon3d
-        │
-        ├─ frames → VGGT poses
-        ├─ gsplat train → gaussians.ply
-        └─ store under /artifacts/{job_id}/
+        ├─ POST /api/jobs        → A100 SceneReconstructor (recon3d)
+        └─ POST /api/orbit/jobs  → CPU run_orbit (Gemini / OpenAI)
 ```
 
 ## Quality tips

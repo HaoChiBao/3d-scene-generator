@@ -89,6 +89,22 @@ image = (
     .add_local_dir("web", remote_path="/app/web")
 )
 
+# CPU image for the site + orbit (Gemini / OpenAI). Keep A100 off this path.
+web_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install(
+        "fastapi",
+        "python-multipart",
+        "uvicorn",
+        "Pillow",
+        "google-genai",
+        "openai",
+        "httpx",
+    )
+    .add_local_python_source("scene_gen")
+    .add_local_dir("web", remote_path="/app/web")
+)
+
 app = modal.App(APP_NAME)
 artifact_vol = modal.Volume.from_name("3d-scene-artifacts", create_if_missing=True)
 hf_vol = modal.Volume.from_name("3d-scene-hf-cache", create_if_missing=True)
@@ -200,7 +216,81 @@ class SceneReconstructor:
 
 
 @app.function(
-    image=image,
+    image=web_image,
+    timeout=45 * 60,
+    memory=4096,
+    volumes={str(ARTIFACT_ROOT): artifact_vol},
+)
+def run_orbit(
+    job_id: str,
+    filename: str,
+    media_bytes: bytes,
+    params: dict,
+) -> dict:
+    from scene_gen.orbit_views import reconstruct_orbit
+
+    prev = dict(jobs[job_id]) if job_id in jobs else {"id": job_id, "kind": "orbit"}
+
+    def set_status(message: str, meta: dict | None = None) -> None:
+        jobs[job_id] = {
+            **prev,
+            "status": "running",
+            "message": message,
+            "kind": "orbit",
+            "model": params.get("model") or params.get("provider"),
+            "meta": meta or prev.get("meta"),
+        }
+        try:
+            artifact_vol.commit()
+        except Exception as commit_exc:  # noqa: BLE001
+            print(f"orbit artifact commit skipped: {commit_exc}", flush=True)
+
+    set_status("Starting orbit generation…")
+    out = _job_dir(job_id)
+    out.mkdir(parents=True, exist_ok=True)
+    media_path = out / filename
+    media_path.write_bytes(media_bytes)
+
+    try:
+        meta = reconstruct_orbit(
+            media_path,
+            out,
+            increment_deg=float(params["increment_deg"]),
+            start_deg=float(params["start_deg"]),
+            end_deg=float(params["end_deg"]),
+            elevation_deg=float(params["elevation_deg"]),
+            radius=float(params["radius"]),
+            fov_deg=float(params["fov_deg"]),
+            provider=str(params["provider"]),
+            model=params.get("model"),
+            extra_prompt=str(params.get("extra_prompt") or ""),
+            api_key=params.get("api_key"),
+            on_progress=set_status,
+        )
+        artifact_vol.commit()
+        result = {
+            **prev,
+            "status": "succeeded",
+            "message": f"Generated {meta.get('n_views')} orbit views",
+            "kind": "orbit",
+            "model": meta.get("model"),
+            "meta": meta,
+        }
+        jobs[job_id] = result
+        return result
+    except Exception as exc:  # noqa: BLE001
+        jobs[job_id] = {
+            **prev,
+            "status": "failed",
+            "message": str(exc),
+            "kind": "orbit",
+        }
+        artifact_vol.commit()
+        raise
+
+
+@app.function(
+    image=web_image,
     timeout=60 * 60,
     volumes={str(ARTIFACT_ROOT): artifact_vol},
 )
@@ -223,9 +313,20 @@ def api():
     def health():
         return {
             "ok": True,
-            "model": "recon3d (VGGT + gsplat)",
             "app": APP_NAME,
-            "docs": "MODELS.md",
+            "docs": "METHODS.md",
+            "methods": [
+                {
+                    "id": "reconstruct",
+                    "path": "/",
+                    "model": "recon3d (VGGT + gsplat)",
+                },
+                {
+                    "id": "orbit",
+                    "path": "/orbit",
+                    "model": "gemini-2.5-flash-image / gpt-image-1",
+                },
+            ],
         }
 
     @web.post("/api/jobs")
@@ -281,6 +382,96 @@ def api():
             "status": "queued",
             "message": "Queued — waiting for GPU",
         }
+
+    @web.post("/api/orbit/jobs")
+    async def create_orbit_job(request: Request):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            raise HTTPException(400, "Missing file")
+
+        filename = getattr(upload, "filename", None) or "source.jpg"
+        data = await upload.read()
+        if not data:
+            raise HTTPException(400, "Empty upload")
+        if len(data) > 25 * 1024 * 1024:
+            raise HTTPException(400, "File too large (max 25MB)")
+
+        increment_deg = float(form.get("increment_deg") or 10)
+        start_deg = float(form.get("start_deg") or 0)
+        end_deg = float(form.get("end_deg") or 360)
+        elevation_deg = float(form.get("elevation_deg") or 12)
+        radius = float(form.get("radius") or 2.4)
+        fov_deg = float(form.get("fov_deg") or 45)
+        provider = str(form.get("provider") or "gemini").lower()
+        model = str(form.get("model") or "").strip() or None
+        extra_prompt = str(form.get("extra_prompt") or "")
+        api_key = str(form.get("api_key") or "").strip() or None
+
+        increment_deg = max(5, min(increment_deg, 90))
+        start_deg = max(0, min(start_deg, 350))
+        end_deg = max(start_deg + increment_deg, min(end_deg, 360))
+        elevation_deg = max(0, min(elevation_deg, 75))
+        radius = max(0.6, min(radius, 8))
+        fov_deg = max(20, min(fov_deg, 90))
+        if provider not in ("gemini", "openai"):
+            raise HTTPException(400, "provider must be gemini or openai")
+
+        job_id = uuid.uuid4().hex[:12]
+        await jobs.put.aio(
+            job_id,
+            {
+                "id": job_id,
+                "status": "queued",
+                "kind": "orbit",
+                "message": "Queued — generating novel views",
+                "filename": filename,
+                "model": model or provider,
+            },
+        )
+        await run_orbit.spawn.aio(
+            job_id,
+            filename,
+            data,
+            {
+                "increment_deg": increment_deg,
+                "start_deg": start_deg,
+                "end_deg": end_deg,
+                "elevation_deg": elevation_deg,
+                "radius": radius,
+                "fov_deg": fov_deg,
+                "provider": provider,
+                "model": model,
+                "extra_prompt": extra_prompt,
+                "api_key": api_key,
+            },
+        )
+        return {"id": job_id, "status": "queued", "kind": "orbit"}
+
+    @web.get("/api/orbit/jobs/{job_id}")
+    async def get_orbit_job(job_id: str):
+        data = await jobs.get.aio(job_id)
+        if data is None:
+            raise HTTPException(404, "Job not found")
+        return data
+
+    @web.get("/api/orbit/jobs/{job_id}/frames/{index}")
+    def get_orbit_frame(job_id: str, index: int):
+        artifact_vol.reload()
+        job = _job_dir(job_id)
+        meta_path = job / "meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            frames = meta.get("frames") or []
+            if 0 <= index < len(frames):
+                path = job / frames[index]["file"]
+                if path.exists():
+                    return FileResponse(path, media_type="image/jpeg")
+        # Progressive: frames written before meta.json is final.
+        matches = sorted((job / "frames").glob(f"{index:03d}_*.jpg"))
+        if matches:
+            return FileResponse(matches[0], media_type="image/jpeg")
+        raise HTTPException(404, "Frame not ready")
 
     @web.get("/api/jobs/{job_id}")
     async def get_job(job_id: str):
@@ -347,5 +538,9 @@ def api():
         @web.get("/")
         def index():
             return HTMLResponse((static_dir / "index.html").read_text(encoding="utf-8"))
+
+        @web.get("/orbit")
+        def orbit():
+            return HTMLResponse((static_dir / "orbit.html").read_text(encoding="utf-8"))
 
     return web
