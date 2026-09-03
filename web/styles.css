@@ -250,6 +250,79 @@ button:disabled {
   cursor: wait;
 }
 
+button.secondary {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.orbit-actions {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.saved-wrap {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.saved-label {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+.saved-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.saved-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.saved-item button {
+  padding: 0.45rem 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.saved-open {
+  text-align: left;
+  color: var(--ink);
+  background: var(--fill);
+  border-color: var(--line);
+}
+
+.saved-open strong {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.saved-open span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--subtle);
+}
+
+.saved-delete {
+  min-width: 2.1rem;
+  color: var(--muted);
+  background: var(--surface);
+  border-color: var(--line);
+}
+
 .status {
   margin-top: 1rem;
   padding: 0.75rem 0.85rem;
@@ -316,6 +389,62 @@ button:disabled {
   background: #ffffff;
 }
 
+.orbit-focus {
+  position: absolute;
+  inset: 0 0 6.4rem 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  background: #f4f4f4;
+}
+
+.orbit-focus img {
+  display: block;
+  max-width: calc(100% - 3rem);
+  max-height: calc(100% - 3.4rem);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
+}
+
+.orbit-focus figcaption {
+  position: absolute;
+  left: 1.25rem;
+  top: 1.25rem;
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+#focus-angle {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  line-height: 1;
+}
+
+#focus-source {
+  font-size: 0.72rem;
+  color: var(--subtle);
+}
+
+.viewport-orbit.is-viewing #orbit-host {
+  inset: auto 1.25rem auto auto;
+  top: 1.25rem;
+  right: 1.25rem;
+  width: min(320px, 36vw);
+  height: min(220px, 28vh);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: var(--shadow);
+  z-index: 2;
+}
+
 #orbit-host,
 #orbit-host canvas {
   width: 100%;
@@ -330,18 +459,17 @@ button:disabled {
   bottom: 5.4rem;
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
   pointer-events: none;
+  z-index: 3;
 }
 
 .angle-readout {
   pointer-events: auto;
-  min-width: 220px;
+  min-width: min(280px, 70vw);
   padding: 0.7rem 0.85rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .angle-readout span {
@@ -355,29 +483,6 @@ button:disabled {
   width: 100%;
 }
 
-.view-preview {
-  pointer-events: auto;
-  margin: 0;
-  width: min(220px, 28vw);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.view-preview img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.view-preview figcaption {
-  padding: 0.35rem 0.55rem 0.45rem;
-  font-size: 0.72rem;
-  color: var(--subtle);
-}
-
 .filmstrip {
   position: absolute;
   left: 0;
@@ -387,7 +492,8 @@ button:disabled {
   gap: 0.4rem;
   overflow-x: auto;
   padding: 0.7rem 1rem 0.85rem;
-  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.92));
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.96));
+  z-index: 3;
 }
 
 .strip-item {
@@ -399,6 +505,10 @@ button:disabled {
   background: var(--surface);
   color: var(--ink);
   overflow: hidden;
+}
+
+.strip-item.is-current {
+  border-color: var(--ink);
 }
 
 .strip-item img {

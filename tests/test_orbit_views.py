@@ -1,4 +1,11 @@
-from scene_gen.orbit_views import camera_xyz, describe_azimuth, iter_angles
+from scene_gen.orbit_views import (
+    angular_distance,
+    camera_xyz,
+    describe_azimuth,
+    generation_order,
+    iter_angles,
+    select_context,
+)
 
 
 def test_iter_angles_ten_degree_circle():
@@ -28,3 +35,26 @@ def test_camera_xyz_front_and_side():
 def test_describe_azimuth():
     assert "front" in describe_azimuth(0)
     assert "behind" in describe_azimuth(180)
+
+
+def test_generation_order_bidirectional():
+    angles = iter_angles(0, 360, 10)
+    order = generation_order(angles, "bidirectional")
+    assert order[:5] == [0, 10, 350, 20, 340]
+    assert generation_order(angles, "sequential") == angles
+
+
+def test_select_context_nearest_keeps_original():
+    generated = [
+        {"angle": 0, "image": "orig"},
+        {"angle": 10, "image": "a"},
+        {"angle": 350, "image": "b"},
+        {"angle": 20, "image": "c"},
+    ]
+    refs = select_context(30, generated, mode="nearest", max_neighbors=2)
+    assert refs[0]["angle"] == 0
+    assert [r["angle"] for r in refs[1:]] == [20, 10]
+
+
+def test_angular_distance_wraps():
+    assert angular_distance(350, 10) == 20

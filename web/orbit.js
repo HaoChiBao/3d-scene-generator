@@ -1,5 +1,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { deleteOrbit, getOrbit, listOrbits, orbitSummary, saveOrbit } from "/assets/orbit_store.js";
+import { downloadOrbitZip } from "/assets/orbit_zip.js";
+
+const PARAM_KEY = "scene-space-orbit-params";
+const LAST_ID_KEY = "scene-space-orbit-last";
 
 const form = document.getElementById("orbit-form");
 const fileInput = document.getElementById("file");
@@ -10,17 +15,26 @@ const metaWrap = document.getElementById("meta-wrap");
 const emptyEl = document.getElementById("empty");
 const hintEl = document.getElementById("hint");
 const submitBtn = document.getElementById("submit");
+const downloadBtn = document.getElementById("download-orbit");
 const host = document.getElementById("orbit-host");
+const viewportEl = document.getElementById("orbit-viewport");
 const angleHud = document.getElementById("angle-hud");
 const angleLabel = document.getElementById("angle-label");
 const angleSlider = document.getElementById("angle-slider");
 const viewCountEl = document.getElementById("view-count");
 const filmstrip = document.getElementById("filmstrip");
-const viewPreview = document.getElementById("view-preview");
-const viewPreviewImg = document.getElementById("view-preview-img");
-const viewPreviewCap = document.getElementById("view-preview-cap");
 const providerEl = document.getElementById("provider");
 const modelEl = document.getElementById("model");
+const keyStatusEl = document.getElementById("key-status");
+const apiKeyWrap = document.getElementById("api-key-wrap");
+const savedWrap = document.getElementById("saved-wrap");
+const savedList = document.getElementById("saved-list");
+const orbitFocus = document.getElementById("orbit-focus");
+const focusImg = document.getElementById("focus-img");
+const focusAngle = document.getElementById("focus-angle");
+const focusSource = document.getElementById("focus-source");
+
+let serverProviders = { gemini: false, openai: false };
 
 const DEFAULT_MODELS = {
   gemini: "gemini-2.5-flash-image",
@@ -70,9 +84,21 @@ scene.add(frustumGroup);
 let imagePlane = null;
 let imageAspect = 1;
 let localImageUrl = null;
+let originalBlob = null;
+let originalName = "";
+let sessionId = null;
 let jobId = null;
 let frames = [];
 let currentAngle = 0;
+let saveTimer = 0;
+let wheelLock = 0;
+let mapToken = 0;
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
 
 function params() {
   return {
@@ -86,7 +112,15 @@ function params() {
     model: modelEl.value.trim(),
     extra: document.getElementById("extra-prompt").value,
     apiKey: document.getElementById("api-key").value,
+    contextMode: document.getElementById("context-mode").value,
+    orderMode: document.getElementById("order-mode").value,
   };
+}
+
+function persistableParams() {
+  const p = params();
+  delete p.apiKey;
+  return p;
 }
 
 function clampNum(id, min, max, fallback) {
@@ -103,6 +137,39 @@ function plannedAngles() {
     if (out.length > 72) break;
   }
   return out;
+}
+
+function persistParams() {
+  try {
+    localStorage.setItem(PARAM_KEY, JSON.stringify(persistableParams()));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function restoreParams() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PARAM_KEY) || "null");
+    if (!saved) return;
+    const map = {
+      increment: "increment",
+      elevation: "elevation",
+      start: "start-deg",
+      end: "end-deg",
+      radius: "radius",
+      fov: "fov",
+    };
+    for (const [key, id] of Object.entries(map)) {
+      if (saved[key] != null) document.getElementById(id).value = saved[key];
+    }
+    if (saved.provider) providerEl.value = saved.provider;
+    if (saved.model) modelEl.value = saved.model;
+    if (saved.extra != null) document.getElementById("extra-prompt").value = saved.extra;
+    if (saved.contextMode) document.getElementById("context-mode").value = saved.contextMode;
+    if (saved.orderMode) document.getElementById("order-mode").value = saved.orderMode;
+  } catch {
+    /* ignore bad cache */
+  }
 }
 
 function refreshViewCount() {
@@ -173,6 +240,10 @@ function rebuildFrustum() {
   placeFrustum(currentAngle);
 }
 
+function frameSrc(frame) {
+  return frame?.objectUrl || localImageUrl || "";
+}
+
 function placeFrustum(angle) {
   const { elevation, radius } = params();
   const look = new THREE.Vector3(0, imagePlane ? imagePlane.position.y : 0.6, 0);
@@ -182,6 +253,54 @@ function placeFrustum(angle) {
   currentAngle = angle;
   angleLabel.textContent = `${Math.round(angle)}°`;
   angleSlider.value = String(angle);
+}
+
+function setPlaneMap(url) {
+  if (!url) return;
+  const token = (mapToken += 1);
+  const loader = new THREE.TextureLoader();
+  loader.setCrossOrigin("anonymous");
+  loader.load(url, (tex) => {
+    if (token !== mapToken) {
+      tex.dispose();
+      return;
+    }
+    tex.colorSpace = THREE.SRGBColorSpace;
+    if (!imagePlane?.material) return;
+    const old = imagePlane.material.map;
+    imagePlane.material.map = tex;
+    imagePlane.material.needsUpdate = true;
+    old?.dispose?.();
+  });
+}
+
+function showViewing(on) {
+  viewportEl.classList.toggle("is-viewing", on);
+  orbitFocus.hidden = !on;
+  emptyEl.hidden = on;
+  emptyEl.classList.toggle("hidden", on);
+  angleHud.hidden = !on;
+  if (on) {
+    hintEl.textContent = "Scroll or use the slider to step through angles";
+  }
+}
+
+function showFocus(frame) {
+  const url = frameSrc(frame) || localImageUrl;
+  if (!url) {
+    showViewing(false);
+    return;
+  }
+  showViewing(true);
+  focusImg.src = url;
+  const angle = frame ? frame.angle : currentAngle;
+  focusAngle.textContent = `${Math.round(angle)}°`;
+  focusSource.textContent = frame
+    ? frame.source === "original"
+      ? "Original"
+      : "Generated"
+    : "Original";
+  setPlaneMap(url);
 }
 
 function setImageTexture(url, width, height) {
@@ -214,9 +333,24 @@ function setImageTexture(url, width, height) {
     imageGroup.add(photo);
     shadow.scale.set(w * 1.05, 1, 0.55);
     rebuildFrustum();
-    emptyEl.classList.add("hidden");
-    angleHud.hidden = false;
+    showFocus(frameForAngle(currentAngle));
+    resize();
   });
+}
+
+function loadStill(blob, name, angle = 0) {
+  if (localImageUrl) URL.revokeObjectURL(localImageUrl);
+  originalBlob = blob;
+  originalName = name || "still.jpg";
+  localImageUrl = URL.createObjectURL(blob);
+  fileLabel.textContent = originalName;
+  fileInput.removeAttribute("required");
+  const probe = new Image();
+  probe.onload = () => {
+    currentAngle = angle;
+    setImageTexture(localImageUrl, probe.width, probe.height);
+  };
+  probe.src = localImageUrl;
 }
 
 function resize() {
@@ -253,30 +387,183 @@ function frameForAngle(angle) {
   }, null);
 }
 
-function showPreview(frame) {
-  if (!frame || !jobId) {
-    viewPreview.hidden = true;
-    return;
+function scrubAngles() {
+  if (frames.length) {
+    return [...frames].sort((a, b) => a.angle - b.angle).map((f) => f.angle);
   }
-  viewPreview.hidden = false;
-  viewPreviewImg.src = `/api/orbit/jobs/${jobId}/frames/${frame.index}`;
-  viewPreviewCap.textContent =
-    frame.source === "original" ? "Original · 0°" : `Generated · ${Math.round(frame.angle)}°`;
+  return plannedAngles();
+}
+
+function selectAngle(angle) {
+  placeFrustum(angle);
+  const frame = frameForAngle(angle);
+  showFocus(frame);
+  highlightFilmstrip(frame);
+}
+
+function stepAngle(dir) {
+  const angles = scrubAngles();
+  if (!angles.length) return;
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < angles.length; i += 1) {
+    const dist = Math.abs(angles[i] - currentAngle);
+    if (dist < bestDist) {
+      best = i;
+      bestDist = dist;
+    }
+  }
+  const next = angles[(best + dir + angles.length) % angles.length];
+  selectAngle(next);
+}
+
+function highlightFilmstrip(frame) {
+  const index = frame?.index;
+  for (const btn of filmstrip.querySelectorAll(".strip-item")) {
+    btn.classList.toggle("is-current", Number(btn.dataset.index) === index);
+  }
 }
 
 function renderFilmstrip() {
   filmstrip.hidden = frames.length === 0;
+  downloadBtn.hidden = frames.length === 0;
   filmstrip.innerHTML = "";
+  const current = frameForAngle(currentAngle);
   for (const frame of frames) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "strip-item";
-    btn.innerHTML = `<img alt="" src="/api/orbit/jobs/${jobId}/frames/${frame.index}" /><span>${Math.round(frame.angle)}°</span>`;
-    btn.addEventListener("click", () => {
-      placeFrustum(frame.angle);
-      showPreview(frame);
-    });
+    btn.dataset.index = String(frame.index);
+    if (current && current.index === frame.index) btn.classList.add("is-current");
+    const src = frameSrc(frame);
+    btn.innerHTML = `<img alt="" src="${src}" /><span>${Math.round(frame.angle)}°</span>`;
+    btn.addEventListener("click", () => selectAngle(frame.angle));
     filmstrip.appendChild(btn);
+  }
+}
+
+function mergeFrames(incoming) {
+  const prev = new Map(frames.map((f) => [Math.round(f.angle), f]));
+  frames = incoming.map((frame) => {
+    const old = prev.get(Math.round(frame.angle));
+    if (old?.blob) {
+      return { ...frame, blob: old.blob, objectUrl: old.objectUrl };
+    }
+    return { ...frame };
+  });
+}
+
+async function hydrateFrame(frame) {
+  if (frame.objectUrl) return frame;
+  if (frame.blob) {
+    frame.objectUrl = URL.createObjectURL(frame.blob);
+    return frame;
+  }
+  if (!jobId || frame.index == null) return frame;
+  const res = await fetch(`/api/orbit/jobs/${jobId}/frames/${frame.index}`);
+  if (!res.ok) return frame;
+  frame.blob = await res.blob();
+  frame.objectUrl = URL.createObjectURL(frame.blob);
+  return frame;
+}
+
+async function hydrateIncoming(incoming) {
+  mergeFrames(incoming);
+  await Promise.all(frames.map((frame) => hydrateFrame(frame)));
+  renderFilmstrip();
+  selectAngle(currentAngle);
+  scheduleSave();
+}
+
+function currentSessionId() {
+  return sessionId || jobId || "draft";
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    persistCurrent().catch((err) => console.warn("Orbit save failed", err));
+  }, 250);
+}
+
+async function persistCurrent() {
+  if (!originalBlob) return;
+  const id = currentSessionId();
+  sessionId = id;
+  const record = {
+    id,
+    jobId,
+    fileName: originalName,
+    params: persistableParams(),
+    currentAngle,
+    original: originalBlob,
+    frames: frames
+      .filter((f) => f.blob)
+      .map((f) => ({
+        index: f.index,
+        angle: f.angle,
+        source: f.source,
+        context_angles: f.context_angles || [],
+        file: f.file,
+        blob: f.blob,
+      })),
+  };
+  await saveOrbit(record);
+  try {
+    localStorage.setItem(LAST_ID_KEY, id);
+  } catch {
+    /* ignore */
+  }
+  await refreshSavedList();
+}
+
+function revokeFrameUrls(list) {
+  for (const frame of list) {
+    if (frame.objectUrl) URL.revokeObjectURL(frame.objectUrl);
+  }
+}
+
+async function applyRecord(record) {
+  if (!record?.original) return;
+  revokeFrameUrls(frames);
+  sessionId = record.id;
+  jobId = record.jobId || record.id;
+  originalName = record.fileName || "still.jpg";
+  frames = (record.frames || []).map((f) => ({
+    ...f,
+    objectUrl: f.blob ? URL.createObjectURL(f.blob) : "",
+  }));
+  if (record.params) {
+    localStorage.setItem(PARAM_KEY, JSON.stringify(record.params));
+    restoreParams();
+    refreshViewCount();
+  }
+  loadStill(record.original, originalName, record.currentAngle ?? 0);
+  renderFilmstrip();
+  selectAngle(record.currentAngle ?? 0);
+  persistParams();
+  setStatus(
+    frames.length ? `Restored ${frames.length} views from this browser` : "Restored still from this browser",
+    "ok"
+  );
+}
+
+async function refreshSavedList() {
+  const rows = await listOrbits();
+  savedList.innerHTML = "";
+  savedWrap.hidden = rows.length === 0;
+  for (const row of rows) {
+    const info = orbitSummary(row);
+    const li = document.createElement("li");
+    li.className = "saved-item";
+    li.innerHTML = `
+      <button type="button" class="saved-open" data-id="${escapeHtml(info.id)}">
+        <strong>${escapeHtml(info.title)}</strong>
+        <span>${escapeHtml(info.detail)}</span>
+      </button>
+      <button type="button" class="saved-delete" data-id="${escapeHtml(info.id)}" aria-label="Delete saved orbit">×</button>
+    `;
+    savedList.appendChild(li);
   }
 }
 
@@ -284,33 +571,124 @@ function renderFilmstrip() {
   document.getElementById(id).addEventListener("input", () => {
     refreshViewCount();
     rebuildFrustum();
+    persistParams();
+    scheduleSave();
   });
 });
 
+["context-mode", "order-mode", "provider", "model", "extra-prompt"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", persistParams);
+});
+
+function refreshKeyStatus() {
+  const ready = [];
+  if (serverProviders.gemini) ready.push("Gemini");
+  if (serverProviders.openai) ready.push("OpenAI");
+  if (ready.length) {
+    keyStatusEl.textContent = `Using ${ready.join(" + ")} keys from the server`;
+    apiKeyWrap.hidden = true;
+  } else {
+    keyStatusEl.textContent = "No server keys — paste an API key below";
+    apiKeyWrap.hidden = false;
+  }
+}
+
+async function loadServerKeys() {
+  try {
+    const res = await fetch("/api/health");
+    const data = await res.json();
+    serverProviders = data.providers || serverProviders;
+  } catch (err) {
+    console.warn("Could not read server key status", err);
+  }
+  refreshKeyStatus();
+}
+
 providerEl.addEventListener("change", () => {
   modelEl.value = DEFAULT_MODELS[providerEl.value] || modelEl.value;
+  persistParams();
 });
 
 fileInput.addEventListener("change", () => {
   const file = fileInput.files?.[0];
-  fileLabel.textContent = file ? file.name : "Drop a still image";
   if (!file) return;
-  if (localImageUrl) URL.revokeObjectURL(localImageUrl);
-  localImageUrl = URL.createObjectURL(file);
-  const probe = new Image();
-  probe.onload = () => setImageTexture(localImageUrl, probe.width, probe.height);
-  probe.src = localImageUrl;
+  revokeFrameUrls(frames);
   frames = [];
   jobId = null;
+  sessionId = `draft-${Date.now()}`;
   filmstrip.hidden = true;
-  viewPreview.hidden = true;
-  hintEl.textContent = "Drag to orbit the diagram · slider moves the camera";
+  downloadBtn.hidden = true;
+  loadStill(file, file.name, params().start);
+  persistParams();
+  scheduleSave();
 });
 
 angleSlider.addEventListener("input", () => {
-  const angle = Number(angleSlider.value);
-  placeFrustum(angle);
-  showPreview(frameForAngle(angle));
+  selectAngle(Number(angleSlider.value));
+  scheduleSave();
+});
+
+viewportEl.addEventListener(
+  "wheel",
+  (event) => {
+    if (orbitFocus.hidden) return;
+    if (event.target.closest(".filmstrip, #orbit-host")) return;
+    event.preventDefault();
+    const now = performance.now();
+    if (now < wheelLock) return;
+    if (Math.abs(event.deltaY) < 4) return;
+    wheelLock = now + 90;
+    stepAngle(event.deltaY > 0 ? 1 : -1);
+    scheduleSave();
+  },
+  { passive: false }
+);
+
+window.addEventListener("keydown", (event) => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+    return;
+  }
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    event.preventDefault();
+    stepAngle(1);
+  }
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    event.preventDefault();
+    stepAngle(-1);
+  }
+});
+
+savedList.addEventListener("click", async (event) => {
+  const del = event.target.closest(".saved-delete");
+  if (del) {
+    await deleteOrbit(del.dataset.id);
+    if (sessionId === del.dataset.id) {
+      sessionId = null;
+    }
+    await refreshSavedList();
+    return;
+  }
+  const open = event.target.closest(".saved-open");
+  if (!open) return;
+  const record = await getOrbit(open.dataset.id);
+  if (record) await applyRecord(record);
+});
+
+downloadBtn.addEventListener("click", async () => {
+  if (!frames.length) return;
+  downloadBtn.disabled = true;
+  try {
+    await Promise.all(frames.map((frame) => hydrateFrame(frame)));
+    await downloadOrbitZip({
+      frames,
+      params: persistableParams(),
+      fileName: originalName,
+    });
+  } catch (err) {
+    setStatus(err.message || String(err), "error");
+  } finally {
+    downloadBtn.disabled = false;
+  }
 });
 
 async function pollJob(id) {
@@ -322,17 +700,15 @@ async function pollJob(id) {
     const elapsed = formatElapsed(Date.now() - started);
     setStatus(`${(data.message || data.status || "Working").trim()} · ${elapsed}`);
     if (Array.isArray(data.meta?.frames)) {
-      frames = data.meta.frames;
-      renderFilmstrip();
-      showPreview(frameForAngle(currentAngle));
+      await hydrateIncoming(data.meta.frames);
     }
     if (data.status === "succeeded") {
       metaWrap.hidden = false;
       metaEl.textContent = JSON.stringify(data.meta ?? data, null, 2);
-      frames = data.meta?.frames || frames;
-      renderFilmstrip();
-      showPreview(frameForAngle(currentAngle));
-      setStatus(`Ready — ${frames.length} views`, "ok");
+      if (Array.isArray(data.meta?.frames)) {
+        await hydrateIncoming(data.meta.frames);
+      }
+      setStatus(`Ready — ${frames.length} views · saved in this browser`, "ok");
       return;
     }
     if (data.status === "failed") {
@@ -344,8 +720,11 @@ async function pollJob(id) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const file = fileInput.files?.[0];
-  if (!file) return;
+  const file = fileInput.files?.[0] || originalBlob;
+  if (!file) {
+    setStatus("Upload a still first", "error");
+    return;
+  }
 
   const p = params();
   const angles = plannedAngles();
@@ -360,7 +739,7 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const body = new FormData();
-    body.append("file", file);
+    body.append("file", file, originalName || file.name || "still.jpg");
     body.append("increment_deg", String(p.increment));
     body.append("start_deg", String(p.start));
     body.append("end_deg", String(p.end));
@@ -370,6 +749,8 @@ form.addEventListener("submit", async (event) => {
     body.append("provider", p.provider);
     body.append("model", p.model);
     body.append("extra_prompt", p.extra);
+    body.append("context_mode", p.contextMode);
+    body.append("order_mode", p.orderMode);
     if (p.apiKey) body.append("api_key", p.apiKey);
 
     const res = await fetch("/api/orbit/jobs", { method: "POST", body });
@@ -379,6 +760,7 @@ form.addEventListener("submit", async (event) => {
     }
     const created = await res.json();
     jobId = created.id;
+    sessionId = created.id;
     setStatus("Queued — generating views one angle at a time");
     await pollJob(jobId);
   } catch (err) {
@@ -389,7 +771,23 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+async function boot() {
+  restoreParams();
+  refreshViewCount();
+  loadServerKeys();
+  resize();
+  animate();
+  await refreshSavedList();
+  let lastId = null;
+  try {
+    lastId = localStorage.getItem(LAST_ID_KEY);
+  } catch {
+    lastId = null;
+  }
+  const record = (lastId && (await getOrbit(lastId))) || (await listOrbits())[0];
+  if (record) await applyRecord(record);
+}
+
 window.addEventListener("resize", resize);
-refreshViewCount();
-resize();
-animate();
+new ResizeObserver(resize).observe(host);
+boot();

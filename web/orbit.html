@@ -35,8 +35,8 @@
 
         <h1>Orbit a still.<br /><span>Synthesize each view.</span></h1>
         <p class="lede">
-          Place a camera on a circle around the photo. Each step calls Gemini or
-          OpenAI to paint the scene from that angle.
+          Place a camera on a circle around the photo. Each step uses the original
+          plus nearby views so the orbit stays consistent.
         </p>
 
         <form id="orbit-form">
@@ -81,6 +81,24 @@
 
           <div class="row">
             <label>
+              Context
+              <select id="context-mode">
+                <option value="nearest" selected>Original + nearest</option>
+                <option value="previous">Original + previous</option>
+                <option value="original">Original only</option>
+              </select>
+            </label>
+            <label>
+              Order
+              <select id="order-mode">
+                <option value="bidirectional" selected>Bidirectional</option>
+                <option value="sequential">Sequential</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
               Provider
               <select id="provider">
                 <option value="gemini" selected>Gemini</option>
@@ -102,39 +120,52 @@
             ></textarea>
           </label>
 
-          <label>
-            API key
+          <p class="view-count" id="key-status">Checking server keys…</p>
+          <label id="api-key-wrap" hidden>
+            Override API key
             <input
               id="api-key"
               type="password"
               autocomplete="off"
-              placeholder="Uses server secret if left blank"
+              placeholder="Optional override"
             />
           </label>
 
           <p class="view-count" id="view-count">36 views · 10° steps</p>
 
-          <button type="submit" id="submit">Generate orbit</button>
+          <div class="orbit-actions">
+            <button type="submit" id="submit">Generate orbit</button>
+            <button type="button" class="secondary" id="download-orbit" hidden>
+              Download labeled orbit
+            </button>
+          </div>
         </form>
 
         <div id="status" class="status" hidden></div>
+        <section id="saved-wrap" class="saved-wrap" hidden>
+          <p class="saved-label">Saved in this browser</p>
+          <ul id="saved-list"></ul>
+        </section>
         <details id="meta-wrap" class="meta-wrap" hidden>
           <summary>Details</summary>
           <pre id="meta" class="meta"></pre>
         </details>
       </aside>
 
-      <main class="viewport viewport-orbit">
+      <main class="viewport viewport-orbit" id="orbit-viewport">
+        <figure class="orbit-focus" id="orbit-focus" hidden>
+          <img id="focus-img" alt="Orbit view" />
+          <figcaption>
+            <span id="focus-angle">0°</span>
+            <span id="focus-source">Original</span>
+          </figcaption>
+        </figure>
         <div id="orbit-host"></div>
         <div class="angle-hud" id="angle-hud" hidden>
           <div class="angle-readout">
             <span id="angle-label">0°</span>
             <input id="angle-slider" type="range" min="0" max="350" step="10" value="0" />
           </div>
-          <figure class="view-preview" id="view-preview" hidden>
-            <img id="view-preview-img" alt="View at current angle" />
-            <figcaption id="view-preview-cap">Original</figcaption>
-          </figure>
         </div>
         <div class="filmstrip" id="filmstrip" hidden></div>
         <div id="empty" class="empty">
